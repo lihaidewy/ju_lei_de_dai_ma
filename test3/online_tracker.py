@@ -1,5 +1,8 @@
+from typing import Dict, Tuple
+
 import numpy as np
 from scipy.optimize import linear_sum_assignment
+from typing import Dict, Tuple, List
 
 
 class KalmanTrack:
@@ -8,31 +11,21 @@ class KalmanTrack:
         self.dt = float(dt)
 
         x, y = center
-
-        # state: [x, y, vx, vy]
         self.state = np.array([x, y, 0.0, 0.0], dtype=float)
-
-        # covariance
         self.P = np.eye(4, dtype=float)
 
-        # motion model
         self.F = np.array([
             [1, 0, self.dt, 0],
             [0, 1, 0, self.dt],
             [0, 0, 1, 0],
-            [0, 0, 0, 1]
+            [0, 0, 0, 1],
         ], dtype=float)
-
-        # measurement model
         self.H = np.array([
             [1, 0, 0, 0],
-            [0, 1, 0, 0]
+            [0, 1, 0, 0],
         ], dtype=float)
 
-        # process noise
         self.Q = np.diag([q_pos, q_pos, q_vel, q_vel]).astype(float)
-
-        # measurement noise
         self.R = np.eye(2, dtype=float) * float(r_pos)
 
         self.age = 1
@@ -42,28 +35,38 @@ class KalmanTrack:
         self.raw_center = np.array(center, dtype=float)
         self.filtered_center = np.array(center, dtype=float)
 
-    def predict(self):
-        self.state = self.F @ self.state
-        self.P = self.F @ self.P @ self.F.T + self.Q
+    @property
+    def position(self) -> np.ndarray:
         return self.state[:2].copy()
 
-    def update(self, measurement):
-        z = np.array(measurement, dtype=float)
+    @property
+    def velocity(self) -> np.ndarray:
+        return self.state[2:].copy()
+
+    def predict(self) -> np.ndarray:
+        self.state = self.F @ self.state
+        self.P = self.F @ self.P @ self.F.T + self.Q
+        self.filtered_center = self.state[:2].copy()
+        return self.filtered_center.copy()
+
+    def update(self, measurement) -> np.ndarray:
+        z = np.asarray(measurement, dtype=float).reshape(2)
 
         y = z - self.H @ self.state
-        S = self.H @ self.P @ self.H.T + self.R
-        K = self.P @ self.H.T @ np.linalg.inv(S)
+        s = self.H @ self.P @ self.H.T + self.R
+        pht = self.P @ self.H.T
+        k = np.linalg.solve(s, pht.T).T
 
-        self.state = self.state + K @ y
-        self.P = (np.eye(4, dtype=float) - K @ self.H) @ self.P
+        self.state = self.state + k @ y
+        i = np.eye(4, dtype=float)
+        kh = k @ self.H
+        self.P = (i - kh) @ self.P @ (i - kh).T + k @ self.R @ k.T
 
         self.filtered_center = self.state[:2].copy()
         self.raw_center = z.copy()
-
         self.hit_count += 1
         self.miss_count = 0
         self.age += 1
-
         return self.filtered_center.copy()
 
     def mark_missed(self):
@@ -84,18 +87,15 @@ class OnlineTrackerManager:
         self.assoc_dist_thr = float(assoc_dist_thr)
         self.max_misses = int(max_misses)
         self.dt = float(dt)
-
         self.q_pos = float(q_pos)
         self.q_vel = float(q_vel)
         self.r_pos = float(r_pos)
-
         self.next_track_id = 1
-        self.tracks = {}
+        self.tracks: Dict[int, KalmanTrack] = {}
 
-    def _build_cost_matrix(self, cluster_centers):
+    def _build_cost_matrix(self, cluster_centers: Dict[int, np.ndarray]) -> Tuple[np.ndarray, List[int], List[int]]:
         track_ids = list(self.tracks.keys())
         cluster_ids = list(cluster_centers.keys())
-
         cost = np.zeros((len(track_ids), len(cluster_ids)), dtype=float)
         predictions = {}
 
@@ -105,13 +105,12 @@ class OnlineTrackerManager:
         for i, tid in enumerate(track_ids):
             pred = predictions[tid]
             for j, cid in enumerate(cluster_ids):
-                c = cluster_centers[cid]
-                d = np.linalg.norm(pred - c)
-                cost[i, j] = d
+                center = cluster_centers[cid]
+                cost[i, j] = float(np.linalg.norm(pred - center))
 
         return cost, track_ids, cluster_ids
 
-    def _new_track(self, center):
+    def _new_track(self, center) -> int:
         tid = self.next_track_id
         self.next_track_id += 1
         self.tracks[tid] = KalmanTrack(
@@ -124,20 +123,20 @@ class OnlineTrackerManager:
         )
         return tid
 
-    def step(self, cluster_centers):
+    def step(self, cluster_centers: Dict[int, np.ndarray]):
         cluster_centers = {
-            int(cid): np.asarray(c, dtype=float)
-            for cid, c in cluster_centers.items()
+            int(cid): np.asarray(center, dtype=float)
+            for cid, center in cluster_centers.items()
         }
 
         filtered_centers = {}
         track_assignments = {}
         raw_centers = {}
 
-        # 没有任何 cluster，所有现有 track 都记一次 missed
         if len(cluster_centers) == 0:
             to_delete = []
             for tid, track in self.tracks.items():
+                track.predict()
                 track.mark_missed()
                 if track.miss_count > self.max_misses:
                     to_delete.append(tid)
@@ -145,7 +144,6 @@ class OnlineTrackerManager:
                 del self.tracks[tid]
             return filtered_centers, track_assignments, raw_centers
 
-        # 当前没有 track：直接初始化
         if len(self.tracks) == 0:
             for cid, center in cluster_centers.items():
                 tid = self._new_track(center)
@@ -155,49 +153,45 @@ class OnlineTrackerManager:
             return filtered_centers, track_assignments, raw_centers
 
         cost, track_ids, cluster_ids = self._build_cost_matrix(cluster_centers)
-
-        row_ind, col_ind = linear_sum_assignment(cost)
+        gated_cost = cost.copy()
+        gated_cost[gated_cost > self.assoc_dist_thr] = 1e6
+        row_ind, col_ind = linear_sum_assignment(gated_cost)
 
         matched_tracks = set()
         matched_clusters = set()
 
-        # 1) 匹配成功的 track 做 update
         for r, c in zip(row_ind, col_ind):
             if cost[r, c] > self.assoc_dist_thr:
                 continue
 
             tid = track_ids[r]
             cid = cluster_ids[c]
-
             track = self.tracks[tid]
             filtered = track.update(cluster_centers[cid])
 
             filtered_centers[cid] = filtered.copy()
             track_assignments[cid] = tid
             raw_centers[cid] = cluster_centers[cid].copy()
-
             matched_tracks.add(tid)
             matched_clusters.add(cid)
 
-        # 2) 未匹配 cluster：新建轨迹
         for cid in cluster_ids:
-            if cid not in matched_clusters:
-                center = cluster_centers[cid]
-                tid = self._new_track(center)
+            if cid in matched_clusters:
+                continue
+            center = cluster_centers[cid]
+            tid = self._new_track(center)
+            filtered_centers[cid] = center.copy()
+            track_assignments[cid] = tid
+            raw_centers[cid] = center.copy()
+            matched_tracks.add(tid)
 
-                filtered_centers[cid] = center.copy()
-                track_assignments[cid] = tid
-                raw_centers[cid] = center.copy()
-
-                matched_tracks.add(tid)  # 新建轨迹本帧视作已处理
-
-        # 3) 未匹配旧轨迹：miss 计数并按需删除
         to_delete = []
         for tid, track in self.tracks.items():
-            if tid not in matched_tracks:
-                track.mark_missed()
-                if track.miss_count > self.max_misses:
-                    to_delete.append(tid)
+            if tid in matched_tracks:
+                continue
+            track.mark_missed()
+            if track.miss_count > self.max_misses:
+                to_delete.append(tid)
 
         for tid in to_delete:
             del self.tracks[tid]
