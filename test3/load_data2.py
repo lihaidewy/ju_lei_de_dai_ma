@@ -50,8 +50,8 @@ def load_data(path, H=6.0, A_is_degree=True, save_csv=True, out_path=None):
         print("Saved:", out_path)
 
     frame_data = {
-        int(k): {c: g[c].values for c in COLS}
-        for k, g in df[COLS].groupby("Frame", sort=True)
+    int(k): g[COLS].copy().reset_index(drop=True)
+    for k, g in df.groupby("Frame", sort=True)
     }
 
     print("Frames:", sorted(frame_data))

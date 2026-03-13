@@ -111,16 +111,17 @@ def temporal_filter_cluster_centers_with_matches(cluster_centers: dict, matches:
 
 def build_point_level_table_from_centers(
     fid: int,
-    frame_item: dict,
+    frame_item: pd.DataFrame,
     labels: np.ndarray,
     cluster_centers: dict,
     matches=None,
 ) -> pd.DataFrame:
     """
     用外部传入的 cluster_centers 构建点级表。
-    同时把 cluster 对应匹配到的真实车辆 gid 写入每个点，便于导出到 Excel。
-    未匹配到 GT 的点，gid 保持为空。
+    保留原始表格列顺序，只在右侧追加结果列。
     """
+    df = frame_item.copy().reset_index(drop=True)
+
     center_x = np.full(len(labels), np.nan, dtype=float)
     center_y = np.full(len(labels), np.nan, dtype=float)
     gid_arr = np.full(len(labels), np.nan, dtype=float)
@@ -138,29 +139,19 @@ def build_point_level_table_from_centers(
         if cid in cid_to_gid:
             gid_arr[mask] = float(cid_to_gid[cid])
 
-    df = pd.DataFrame({
-        "Frame": np.full(len(labels), fid, dtype=int),
-        "X": frame_item["X"],
-        "Y": frame_item["Y"],
-        "V": frame_item["V"],
-        "SNR": frame_item["SNR"],
-        "Label": labels,
-        "gid": gid_arr,
-        "Center_X": center_x,
-        "Center_Y": center_y,
-    })
+    # 只追加列，不改原有列顺序
+    df["Label"] = labels
+    df["gid"] = gid_arr
+    df["Center_X"] = center_x
+    df["Center_Y"] = center_y
 
-    # 有匹配的 gid 转成整数值；未匹配保持 NaN
-    if "gid" in df.columns:
-        valid_mask = ~np.isnan(df["gid"].values)
-        if np.any(valid_mask):
-            df.loc[valid_mask, "gid"] = df.loc[valid_mask, "gid"].astype(int)
-
-    for col in ["Range", "Angle", "Speed"]:
-        if col in frame_item:
-            df[col] = frame_item[col]
+    # gid：有值的转整数，空值保持 NaN
+    valid_mask = df["gid"].notna()
+    if valid_mask.any():
+        df.loc[valid_mask, "gid"] = df.loc[valid_mask, "gid"].astype(int)
 
     return df
+
 
 def evaluate_with_given_centers(cluster_centers: dict, gt_list: list, dist_thr: float = 6.0):
     """
