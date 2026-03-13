@@ -29,7 +29,7 @@ def main():
 
     center_fn = get_center_function(cfg.CLUSTER_CENTER_MODE)
     bias_fn = apply_two_segment_bias
-    
+
     tracker = None
     if cfg.USE_TEMPORAL_KALMAN:
         tracker = KalmanTrackerManager(
@@ -60,8 +60,7 @@ def main():
             bias_fn=bias_fn,
             tracker=tracker,
         )
-        
-        # 导出 TP 匹配样本，用于后续拟合 bias_y = a + b * pred_y
+
         cluster_centers = result["cache_item"].get("cluster_centers", {})
         gt_list = result["gt_list"]
 
@@ -73,15 +72,19 @@ def main():
             }
             for g in gt_list
         }
+
         for mm in result["metrics"].get("matches", []):
             cid = int(mm["cid"])
             gid = int(mm["gid"])
+
             if cid not in cluster_centers:
                 continue
             if gid not in gt_map:
                 continue
+
             pred_center = cluster_centers[cid]
             gt_center = gt_map[gid]
+
             tp_match_rows.append({
                 "Frame": int(fid),
                 "cid": int(cid),
@@ -97,10 +100,8 @@ def main():
 
         pt = result["point_table"]
 
-        # 建立 GT map
+        # 给每个点补 GT 模型
         gt_model_map = {int(g["id"]): int(g["model"]) for g in result["gt_list"]}
-
-        # 给每个点标记 GT 模型
         if "gid" in pt.columns:
             pt["gt_model"] = pt["gid"].map(gt_model_map)
 
@@ -117,9 +118,9 @@ def main():
 
     export_point_table(point_tables, cfg.EXPORT_CSV_PATH, cfg.EXPORT_XLSX_PATH)
     export_tp_matches(tp_match_rows, "data/tp_matches_for_bias.csv")
-    
+    export_tp_matches_excel(tp_match_rows, "data/tp_matches_for_bias.xlsx")
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 10), sharex=True, sharey=True)
     plt.subplots_adjust(bottom=0.08)
 
     state = {"i": 0}

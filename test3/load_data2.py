@@ -2,8 +2,9 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-RAW  = ["Frame", "V", "R", "A", "SNR"]
+RAW = ["Frame", "V", "R", "A", "SNR"]
 COLS = RAW + ["X", "Y"]
+
 
 def load_data(path, H=6.0, A_is_degree=True, save_csv=True, out_path=None):
     path = Path(path)
@@ -23,10 +24,10 @@ def load_data(path, H=6.0, A_is_degree=True, save_csv=True, out_path=None):
     df["Frame"] = df["Frame"].astype(int)
 
     # 角度转弧度
-    a = np.deg2rad(df["A"].to_numpy()) if A_is_degree else df["A"].to_numpy()
+    a = np.deg2rad(df["A"].values) if A_is_degree else df["A"].values
 
     # 原始斜距
-    r = df["R"].to_numpy()
+    r = df["R"].values
 
     # 按 MATLAB 公式计算
     # x = -dist * sin(ang)
@@ -49,7 +50,7 @@ def load_data(path, H=6.0, A_is_degree=True, save_csv=True, out_path=None):
         print("Saved:", out_path)
 
     frame_data = {
-        int(k): {c: g[c].to_numpy() for c in COLS}
+        int(k): {c: g[c].values for c in COLS}
         for k, g in df[COLS].groupby("Frame", sort=True)
     }
 

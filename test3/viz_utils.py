@@ -43,10 +43,10 @@ def render_frame(fig, axes, cache, frame_ids, n_frames, state, i, fit_mode, cfg)
     )
 
     for ax in axes:
+        # ax.set_aspect("equal", adjustable="datalim")
         ax.set_xlim(-30, 30)
         ax.set_ylim(0, 250)
         ax.set_autoscale_on(False)
-        ax.set_aspect("equal", adjustable="box")
         ax.set_xticks(np.arange(-30, 31, 5))
         ax.set_yticks(np.arange(0, 251, 5))
         ax.grid(True)

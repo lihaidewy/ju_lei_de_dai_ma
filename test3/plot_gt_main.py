@@ -32,9 +32,9 @@ def load_gt_reference(reference_path, H=6.0):
     gt["ID"] = gt["ID"].astype(int)
 
     # 角度转弧度
-    a = np.deg2rad(gt["A"].to_numpy())
+    a = np.deg2rad(gt["A"].values)
 
-    r = gt["R"].to_numpy()
+    r = gt["R"].values
 
     # 与 MATLAB 相同的解算
     x = -r * np.sin(a)

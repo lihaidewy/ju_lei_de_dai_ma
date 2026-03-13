@@ -6,8 +6,10 @@ from plot_gt_main import load_gt_reference
 
 import sys
 from pathlib import Path
+
 # 把项目根目录加入搜索路径
 sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 from mylib.cluster_frame_dbscan import cluster_frame_dbscan
 from eval_clusters2_multi_prior_v2 import eval_one_frame_target_level
 from centers import compute_center_with_optional_velocity_filter
@@ -54,6 +56,7 @@ def cluster_one_frame(radar_data, fid: int, cfg):
         min_pts=cfg.MIN_PTS,
     )
 
+
 def build_cluster_centers(labels: np.ndarray, pts: np.ndarray, frame_item: dict, center_fn, bias_fn, cfg):
     """
     显式构建当前帧每个 cluster 的中心。
@@ -84,6 +87,7 @@ def build_cluster_centers(labels: np.ndarray, pts: np.ndarray, frame_item: dict,
 
     return cluster_centers
 
+
 def temporal_filter_cluster_centers_with_matches(cluster_centers: dict, matches: list, tracker):
     """
     用当前帧匹配结果中的 gid 作为 track_id，
@@ -105,17 +109,34 @@ def temporal_filter_cluster_centers_with_matches(cluster_centers: dict, matches:
     return filtered_centers
 
 
-def build_point_level_table_from_centers(fid: int, frame_item: dict, labels: np.ndarray, cluster_centers: dict) -> pd.DataFrame:
+def build_point_level_table_from_centers(
+    fid: int,
+    frame_item: dict,
+    labels: np.ndarray,
+    cluster_centers: dict,
+    matches=None,
+) -> pd.DataFrame:
     """
-    用外部传入的 cluster_centers 构建点集表。
+    用外部传入的 cluster_centers 构建点级表。
+    同时把 cluster 对应匹配到的真实车辆 gid 写入每个点，便于导出到 Excel。
+    未匹配到 GT 的点，gid 保持为空。
     """
     center_x = np.full(len(labels), np.nan, dtype=float)
     center_y = np.full(len(labels), np.nan, dtype=float)
+    gid_arr = np.full(len(labels), np.nan, dtype=float)
+
+    cid_to_gid = {}
+    if matches is not None:
+        for mm in matches:
+            cid_to_gid[int(mm["cid"])] = int(mm["gid"])
 
     for cid, center in cluster_centers.items():
         mask = (labels == cid)
         center_x[mask] = float(center[0])
         center_y[mask] = float(center[1])
+
+        if cid in cid_to_gid:
+            gid_arr[mask] = float(cid_to_gid[cid])
 
     df = pd.DataFrame({
         "Frame": np.full(len(labels), fid, dtype=int),
@@ -124,9 +145,16 @@ def build_point_level_table_from_centers(fid: int, frame_item: dict, labels: np.
         "V": frame_item["V"],
         "SNR": frame_item["SNR"],
         "Label": labels,
+        "gid": gid_arr,
         "Center_X": center_x,
         "Center_Y": center_y,
     })
+
+    # 有匹配的 gid 转成整数值；未匹配保持 NaN
+    if "gid" in df.columns:
+        valid_mask = ~np.isnan(df["gid"].values)
+        if np.any(valid_mask):
+            df.loc[valid_mask, "gid"] = df.loc[valid_mask, "gid"].astype(int)
 
     for col in ["Range", "Angle", "Speed"]:
         if col in frame_item:
@@ -137,7 +165,7 @@ def build_point_level_table_from_centers(fid: int, frame_item: dict, labels: np.
 def evaluate_with_given_centers(cluster_centers: dict, gt_list: list, dist_thr: float = 6.0):
     """
     用外部给定的 cluster centers 和 gt_list 重新做一个简单匹配评估。
-    这里先做 greedy nearest matching，仅用于 EMA 验证。
+    这里先做 greedy nearest matching，仅用于 EMA / Kalman 验证。
     """
     gts = []
     for g in gt_list:
@@ -350,13 +378,13 @@ def process_one_frame(fid: int, radar_data, gt_df, fit_mode: str, cfg, center_fn
     labels = cluster_one_frame(radar_data, fid, cfg)
     gt_list = build_gt_list_for_frame(gt_df, fid)
 
-    # 先做单帧评估（得到 matches，用于 gid 关联）
+    # 先做单帧评估，拿到原始匹配结果
     raw_metrics = evaluate_frame(pts, labels, gt_list, snr, fit_mode, cfg)
 
-    # 显式生成单帧 cluster centers
+    # 构建 cluster center
     cluster_centers = build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg)
 
-    # 如果启用 EMA，则用 gid 做平滑
+    # 如果启用时序滤波，则按 gid 做轨迹更新
     if tracker is not None:
         cluster_centers = temporal_filter_cluster_centers_with_matches(
             cluster_centers=cluster_centers,
@@ -364,15 +392,20 @@ def process_one_frame(fid: int, radar_data, gt_df, fit_mode: str, cfg, center_fn
             tracker=tracker,
         )
 
-
-    # 用平滑后的中心重建点表
-    point_table = build_point_level_table_from_centers(fid, frame_item, labels, cluster_centers)
-
-    # 用平滑后的中心重新评估
+    # 用最终 center 再重新评估一次
     metrics = evaluate_with_given_centers(
         cluster_centers=cluster_centers,
         gt_list=gt_list,
         dist_thr=cfg.DIST_THR,
+    )
+
+    # 关键：把最终匹配到的真实车辆 gid 写进点级表
+    point_table = build_point_level_table_from_centers(
+        fid=fid,
+        frame_item=frame_item,
+        labels=labels,
+        cluster_centers=cluster_centers,
+        matches=metrics.get("matches", []),
     )
 
     cache_item = {
@@ -390,4 +423,3 @@ def process_one_frame(fid: int, radar_data, gt_df, fit_mode: str, cfg, center_fn
         "cache_item": cache_item,
         "gt_list": gt_list,
     }
-
