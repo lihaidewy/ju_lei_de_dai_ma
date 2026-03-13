@@ -115,16 +115,28 @@ def build_point_level_table_from_centers(
     labels: np.ndarray,
     cluster_centers: dict,
     matches=None,
+    track_assignments=None,
+    raw_cluster_centers=None,
 ) -> pd.DataFrame:
     """
     用外部传入的 cluster_centers 构建点级表。
     保留原始表格列顺序，只在右侧追加结果列。
+
+    新增:
+    - track_id
+    - Raw_Center_X / Raw_Center_Y
     """
+
     df = frame_item.copy().reset_index(drop=True)
 
     center_x = np.full(len(labels), np.nan, dtype=float)
     center_y = np.full(len(labels), np.nan, dtype=float)
+
+    raw_center_x = np.full(len(labels), np.nan, dtype=float)
+    raw_center_y = np.full(len(labels), np.nan, dtype=float)
+
     gid_arr = np.full(len(labels), np.nan, dtype=float)
+    track_id_arr = np.full(len(labels), np.nan, dtype=float)
 
     cid_to_gid = {}
     if matches is not None:
@@ -133,22 +145,37 @@ def build_point_level_table_from_centers(
 
     for cid, center in cluster_centers.items():
         mask = (labels == cid)
+
         center_x[mask] = float(center[0])
         center_y[mask] = float(center[1])
 
         if cid in cid_to_gid:
             gid_arr[mask] = float(cid_to_gid[cid])
 
-    # 只追加列，不改原有列顺序
+        if track_assignments is not None and cid in track_assignments:
+            track_id_arr[mask] = float(track_assignments[cid])
+
+        if raw_cluster_centers is not None and cid in raw_cluster_centers:
+            raw_center_x[mask] = float(raw_cluster_centers[cid][0])
+            raw_center_y[mask] = float(raw_cluster_centers[cid][1])
+
+    # 只追加列
     df["Label"] = labels
     df["gid"] = gid_arr
+    df["track_id"] = track_id_arr
+
+    df["Raw_Center_X"] = raw_center_x
+    df["Raw_Center_Y"] = raw_center_y
+
     df["Center_X"] = center_x
     df["Center_Y"] = center_y
 
-    # gid：有值的转整数，空值保持 NaN
-    valid_mask = df["gid"].notna()
-    if valid_mask.any():
-        df.loc[valid_mask, "gid"] = df.loc[valid_mask, "gid"].astype(int)
+    # gid / track_id 转 int（保留 NaN）
+    for col in ["gid", "track_id"]:
+        if col in df.columns:
+            valid_mask = df[col].notna()
+            if valid_mask.any():
+                df.loc[valid_mask, col] = df.loc[valid_mask, col].astype(int)
 
     return df
 
@@ -363,40 +390,52 @@ def process_one_frame(fid: int, radar_data, gt_df, fit_mode: str, cfg, center_fn
     x = frame_item["X"]
     y = frame_item["Y"]
     v = frame_item["V"]
-    snr = frame_item["SNR"]
-
     pts = np.column_stack([x, y])
+
     labels = cluster_one_frame(radar_data, fid, cfg)
     gt_list = build_gt_list_for_frame(gt_df, fid)
 
-    # 先做单帧评估，拿到原始匹配结果
-    raw_metrics = evaluate_frame(pts, labels, gt_list, snr, fit_mode, cfg)
+    # 1) 当前帧原始中心
+    cluster_centers_raw = build_cluster_centers(
+        labels, pts, frame_item, center_fn, bias_fn, cfg
+    )
 
-    # 构建 cluster center
-    cluster_centers = build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg)
+    # 2) 在线关联 + 时序滤波
+    track_assignments = {}
+    cluster_centers_filtered = cluster_centers_raw
+    raw_centers_for_export = {
+        cid: np.asarray(c, dtype=float) for cid, c in cluster_centers_raw.items()
+    }
 
-    # 如果启用时序滤波，则按 gid 做轨迹更新
     if tracker is not None:
-        cluster_centers = temporal_filter_cluster_centers_with_matches(
-            cluster_centers=cluster_centers,
-            matches=raw_metrics.get("matches", []),
-            tracker=tracker,
-        )
+        cluster_centers_filtered, track_assignments, raw_centers_for_export = \
+            temporal_filter_cluster_centers_online(
+                cluster_centers=cluster_centers_raw,
+                tracker=tracker,
+            )
 
-    # 用最终 center 再重新评估一次
-    metrics = evaluate_with_given_centers(
-        cluster_centers=cluster_centers,
+    # 3) raw / filtered 两套评估，方便对比收益
+    metrics_raw = evaluate_with_given_centers(
+        cluster_centers=cluster_centers_raw,
         gt_list=gt_list,
         dist_thr=cfg.DIST_THR,
     )
 
-    # 关键：把最终匹配到的真实车辆 gid 写进点级表
+    metrics = evaluate_with_given_centers(
+        cluster_centers=cluster_centers_filtered,
+        gt_list=gt_list,
+        dist_thr=cfg.DIST_THR,
+    )
+
+    # 4) 点级表默认导出 filtered center，同时带 raw center + track_id
     point_table = build_point_level_table_from_centers(
         fid=fid,
         frame_item=frame_item,
         labels=labels,
-        cluster_centers=cluster_centers,
+        cluster_centers=cluster_centers_filtered,
         matches=metrics.get("matches", []),
+        track_assignments=track_assignments,
+        raw_cluster_centers=raw_centers_for_export,
     )
 
     cache_item = {
@@ -405,12 +444,27 @@ def process_one_frame(fid: int, radar_data, gt_df, fit_mode: str, cfg, center_fn
         "labels": labels,
         "gt_list": gt_list,
         "metrics": metrics,
-        "cluster_centers": cluster_centers,
+        "metrics_raw": metrics_raw,
+        "cluster_centers": cluster_centers_filtered,
+        "cluster_centers_raw": cluster_centers_raw,
+        "track_assignments": track_assignments,
     }
 
     return {
         "point_table": point_table,
         "metrics": metrics,
+        "metrics_raw": metrics_raw,
         "cache_item": cache_item,
         "gt_list": gt_list,
     }
+
+
+def temporal_filter_cluster_centers_online(cluster_centers: dict, tracker):
+    """
+    真正的在线时序滤波：
+    - 不依赖 GT
+    - 先 cluster-to-track 关联
+    - 再做 EMA / Kalman 平滑
+    """
+    filtered_centers, track_assignments, raw_centers = tracker.step(cluster_centers)
+    return filtered_centers, track_assignments, raw_centers

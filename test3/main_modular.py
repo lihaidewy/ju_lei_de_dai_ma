@@ -9,6 +9,9 @@ from stats_utils import init_stats, update_stats, update_range_bias_stats, print
 from viz_utils import render_frame
 from temporal import EMATracker
 from kalman_tracker import KalmanTrackerManager
+from online_tracker import OnlineTrackerManager
+from debug_temporal_filter import TemporalDebugTool
+
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -31,20 +34,21 @@ def main():
     bias_fn = apply_two_segment_bias
 
     tracker = None
-    if cfg.USE_TEMPORAL_KALMAN:
-        tracker = KalmanTrackerManager(
-            dt=cfg.KF_DT,
-            q_pos=cfg.KF_Q_POS,
-            q_vel=cfg.KF_Q_VEL,
-            r_pos=cfg.KF_R_POS,
+    if cfg.USE_ONLINE_TRACKER:
+        tracker = OnlineTrackerManager(
+            assoc_dist_thr=cfg.TRACK_ASSOC_DIST_THR,
+            max_misses=cfg.TRACK_MAX_MISSES,
+            min_hits=cfg.TRACK_MIN_HITS,
+            filter_type=cfg.TRACK_FILTER_TYPE,
+            ema_alpha=cfg.EMA_ALPHA,
         )
-    elif cfg.USE_TEMPORAL_EMA:
-        tracker = EMATracker(alpha=cfg.EMA_ALPHA)
+
 
     stats = init_stats()
     point_tables = []
     cache = {}
     tp_match_rows = []
+    debug_tool = TemporalDebugTool()
 
     range_bins = [(0.0, 100.0), (100.0, 1e9)]
     range_bias_stats = {rb: [] for rb in range_bins}
@@ -60,6 +64,23 @@ def main():
             bias_fn=bias_fn,
             tracker=tracker,
         )
+
+    # ===== 新增：查看时序滤波效果 =====
+        if "metrics_raw" in result:
+            mr = result["metrics_raw"]
+            mf = result["metrics"]
+            print(
+                f"[Frame {fid}] "
+                f"raw_mean_err={mr['mean_center_error']:.3f} -> "
+                f"filtered_mean_err={mf['mean_center_error']:.3f}"
+            )
+
+        debug_tool.update(
+            fid,
+            result.get("metrics_raw"),
+            result.get("metrics")
+        )
+
 
         cluster_centers = result["cache_item"].get("cluster_centers", {})
         gt_list = result["gt_list"]
@@ -138,6 +159,8 @@ def main():
     render_frame(fig, axes, cache, frame_ids, len(frame_ids), state, 0, args.fit_mode, cfg)
 
     print_global_summary(frame_ids, stats, range_bins, range_bias_stats)
+
+    debug_tool.show()
     plt.show()
 
 

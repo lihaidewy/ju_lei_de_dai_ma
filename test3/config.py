@@ -46,13 +46,22 @@ class Config:
     EXPORT_XLSX_PATH = "data/radar_points_with_labels.xlsx"
 
     # Temporal smoothing / tracking
-    USE_TEMPORAL_EMA = True
+    # USE_TEMPORAL_EMA = True
+    USE_ONLINE_TRACKER = True
+    TRACK_FILTER_TYPE = "ema"        # "ema" / "kalman"（先用 ema）
+    TRACK_ASSOC_METHOD = "greedy"    # 第一版先 greedy
+    TRACK_ASSOC_DIST_THR = 6.0
+
+    TRACK_MAX_MISSES = 3
+    TRACK_MIN_HITS = 1
+
     EMA_ALPHA = 0.8
 
-    USE_TEMPORAL_KALMAN = False
+    # USE_TEMPORAL_KALMAN = False
     KF_DT = 1.0
     KF_Q_POS = 0.05
     KF_Q_VEL = 0.3
     KF_R_POS = 3.0
 
 
+    ENABLE_TEMPORAL_DEBUG = True

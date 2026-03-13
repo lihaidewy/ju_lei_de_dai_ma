@@ -76,6 +76,10 @@ def render_frame(fig, axes, cache, frame_ids, n_frames, state, i, fit_mode, cfg)
     for cid, center in item.get("cluster_centers", {}).items():
         cluster_centers[int(cid)] = (float(center[0]), float(center[1]))
 
+    track_assignments = {
+        int(cid): int(tid)
+        for cid, tid in item.get("track_assignments", {}).items()
+    }
 
     gt_pos = {int(g["id"]): (float(g["x"]), float(g["y"])) for g in item["gt_list"]}
 
@@ -87,16 +91,29 @@ def render_frame(fig, axes, cache, frame_ids, n_frames, state, i, fit_mode, cfg)
 
         if cid in cluster_centers:
             cx, cy = cluster_centers[cid]
+            tid = track_assignments.get(cid, -1)
+
             if np.isfinite(iou):
-                ax_c.text(cx, cy + 2.0, f"C{cid}→GT{gid}\nd={d:.1f}, IoU={iou:.2f}", fontsize=9)
+                ax_c.text(
+                    cx, cy + 2.0,
+                    f"C{cid}/T{tid}→GT{gid}\nd={d:.1f}, IoU={iou:.2f}",
+                    fontsize=9
+                )
             else:
-                ax_c.text(cx, cy + 2.0, f"C{cid}→GT{gid}\nd={d:.1f}", fontsize=9)
+                ax_c.text(
+                    cx, cy + 2.0,
+                    f"C{cid}/T{tid}→GT{gid}\nd={d:.1f}",
+                    fontsize=9
+                )
+
 
     for cid in m.get("unmatched_clusters", []):
         cid = int(cid)
         if cid in cluster_centers:
             cx, cy = cluster_centers[cid]
-            ax_c.text(cx, cy + 2.0, f"C{cid}→FP", fontsize=9)
+            tid = track_assignments.get(cid, -1)
+            ax_c.text(cx, cy + 2.0, f"C{cid}/T{tid}→FP", fontsize=9)
+
 
     for gid in m.get("unmatched_gts", []):
         gid = int(gid)
