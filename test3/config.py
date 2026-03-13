@@ -29,6 +29,7 @@ class Config:
 
     # Center strategy
     CLUSTER_CENTER_MODE = "mean"   # mean / median / snr_mean / fixed_box
+
     # Doppler velocity refinement
     USE_VELOCITY_FILTER = False
     VELOCITY_FILTER_THR = 1.2
@@ -45,23 +46,16 @@ class Config:
     EXPORT_CSV_PATH = "data/radar_points_with_labels.csv"
     EXPORT_XLSX_PATH = "data/radar_points_with_labels.xlsx"
 
-    # Temporal smoothing / tracking
-    # USE_TEMPORAL_EMA = True
+    # Online tracking
     USE_ONLINE_TRACKER = True
-    TRACK_FILTER_TYPE = "ema"        # "ema" / "kalman"（先用 ema）
-    TRACK_ASSOC_METHOD = "greedy"    # 第一版先 greedy
-    TRACK_ASSOC_DIST_THR = 6.0
+    TRACK_ASSOC_DIST_THR = 10.0
+    TRACK_MAX_MISSES = 5
 
-    TRACK_MAX_MISSES = 3
-    TRACK_MIN_HITS = 1
-
-    EMA_ALPHA = 0.8
-
-    # USE_TEMPORAL_KALMAN = False
+    # Kalman
     KF_DT = 1.0
-    KF_Q_POS = 0.05
-    KF_Q_VEL = 0.3
-    KF_R_POS = 3.0
+    KF_Q_POS = 0.50
+    KF_Q_VEL = 0.50
+    KF_R_POS = 2.0
 
-
+    # Debug
     ENABLE_TEMPORAL_DEBUG = True

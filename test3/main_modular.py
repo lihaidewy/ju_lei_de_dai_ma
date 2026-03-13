@@ -7,10 +7,8 @@ from data_pipeline import load_all_data, get_frame_ids, process_one_frame
 from exporters import export_point_table, export_tp_matches, export_tp_matches_excel
 from stats_utils import init_stats, update_stats, update_range_bias_stats, print_global_summary
 from viz_utils import render_frame
-from temporal import EMATracker
-from kalman_tracker import KalmanTrackerManager
 from online_tracker import OnlineTrackerManager
-from debug_temporal_filter import TemporalDebugTool
+from debug_tracking import TrackingDebugTool
 
 
 def parse_args():
@@ -33,14 +31,16 @@ def main():
     center_fn = get_center_function(cfg.CLUSTER_CENTER_MODE)
     bias_fn = apply_two_segment_bias
 
+    # ===== 在线 tracker =====
     tracker = None
-    if cfg.USE_ONLINE_TRACKER:
+    if getattr(cfg, "USE_ONLINE_TRACKER", False):
         tracker = OnlineTrackerManager(
             assoc_dist_thr=cfg.TRACK_ASSOC_DIST_THR,
             max_misses=cfg.TRACK_MAX_MISSES,
-            min_hits=cfg.TRACK_MIN_HITS,
-            filter_type=cfg.TRACK_FILTER_TYPE,
-            ema_alpha=cfg.EMA_ALPHA,
+            dt=cfg.KF_DT,
+            q_pos=cfg.KF_Q_POS,
+            q_vel=cfg.KF_Q_VEL,
+            r_pos=cfg.KF_R_POS,
         )
 
 
@@ -48,7 +48,9 @@ def main():
     point_tables = []
     cache = {}
     tp_match_rows = []
-    debug_tool = TemporalDebugTool()
+
+    # ===== tracking 调试工具 =====
+    debug_tool = TrackingDebugTool()
 
     range_bins = [(0.0, 100.0), (100.0, 1e9)]
     range_bias_stats = {rb: [] for rb in range_bins}
@@ -65,8 +67,8 @@ def main():
             tracker=tracker,
         )
 
-    # ===== 新增：查看时序滤波效果 =====
-        if "metrics_raw" in result:
+        # ===== 每帧打印 raw vs filtered 误差 =====
+        if "metrics_raw" in result and result["metrics_raw"] is not None:
             mr = result["metrics_raw"]
             mf = result["metrics"]
             print(
@@ -75,12 +77,15 @@ def main():
                 f"filtered_mean_err={mf['mean_center_error']:.3f}"
             )
 
+        # ===== tracking 调试记录 =====
         debug_tool.update(
             fid,
             result.get("metrics_raw"),
-            result.get("metrics")
+            result.get("metrics"),
+            result["cache_item"].get("cluster_centers", {}),
+            result["cache_item"].get("track_assignments", {}),
+            result.get("gt_list", []),
         )
-
 
         cluster_centers = result["cache_item"].get("cluster_centers", {})
         gt_list = result["gt_list"]
@@ -135,6 +140,7 @@ def main():
             result["metrics"].get("matches", []),
             result["gt_list"]
         )
+
         cache[fid] = result["cache_item"]
 
     export_point_table(point_tables, cfg.EXPORT_CSV_PATH, cfg.EXPORT_XLSX_PATH)
@@ -160,7 +166,9 @@ def main():
 
     print_global_summary(frame_ids, stats, range_bins, range_bias_stats)
 
+    # ===== 调试图 =====
     debug_tool.show()
+
     plt.show()
 
 

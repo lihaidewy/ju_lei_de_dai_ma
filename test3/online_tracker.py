@@ -1,138 +1,203 @@
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 
 
-class Track:
-    def __init__(self, track_id, center, filter_type="ema", ema_alpha=0.8):
+class KalmanTrack:
+    def __init__(self, track_id, center, dt=1.0, q_pos=0.30, q_vel=0.50, r_pos=1.50):
         self.track_id = int(track_id)
-        self.filter_type = str(filter_type).lower()
-        self.ema_alpha = float(ema_alpha)
+        self.dt = float(dt)
 
-        center = np.asarray(center, dtype=float)
-        self.raw_center = center.copy()
-        self.filtered_center = center.copy()
+        x, y = center
+
+        # state: [x, y, vx, vy]
+        self.state = np.array([x, y, 0.0, 0.0], dtype=float)
+
+        # covariance
+        self.P = np.eye(4, dtype=float)
+
+        # motion model
+        self.F = np.array([
+            [1, 0, self.dt, 0],
+            [0, 1, 0, self.dt],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
+        ], dtype=float)
+
+        # measurement model
+        self.H = np.array([
+            [1, 0, 0, 0],
+            [0, 1, 0, 0]
+        ], dtype=float)
+
+        # process noise
+        self.Q = np.diag([q_pos, q_pos, q_vel, q_vel]).astype(float)
+
+        # measurement noise
+        self.R = np.eye(2, dtype=float) * float(r_pos)
 
         self.age = 1
         self.hit_count = 1
         self.miss_count = 0
 
-    def predict(self):
-        # 第一版：EMA没有显式运动模型，直接用上一次 filtered_center 作为预测
-        return self.filtered_center.copy()
+        self.raw_center = np.array(center, dtype=float)
+        self.filtered_center = np.array(center, dtype=float)
 
-    def update(self, center):
-        center = np.asarray(center, dtype=float)
-        self.raw_center = center.copy()
-        self.age += 1
+    def predict(self):
+        self.state = self.F @ self.state
+        self.P = self.F @ self.P @ self.F.T + self.Q
+        return self.state[:2].copy()
+
+    def update(self, measurement):
+        z = np.array(measurement, dtype=float)
+
+        y = z - self.H @ self.state
+        S = self.H @ self.P @ self.H.T + self.R
+        K = self.P @ self.H.T @ np.linalg.inv(S)
+
+        self.state = self.state + K @ y
+        self.P = (np.eye(4, dtype=float) - K @ self.H) @ self.P
+
+        self.filtered_center = self.state[:2].copy()
+        self.raw_center = z.copy()
+
         self.hit_count += 1
         self.miss_count = 0
-
-        if self.filter_type == "ema":
-            self.filtered_center = (
-                self.ema_alpha * center +
-                (1.0 - self.ema_alpha) * self.filtered_center
-            )
-        else:
-            # 先占位；后面如果你要上 Kalman，再替换这里
-            self.filtered_center = center.copy()
+        self.age += 1
 
         return self.filtered_center.copy()
 
     def mark_missed(self):
-        self.age += 1
         self.miss_count += 1
+        self.age += 1
 
 
 class OnlineTrackerManager:
     def __init__(
         self,
-        assoc_dist_thr=6.0,
-        max_misses=3,
-        min_hits=1,
-        filter_type="ema",
-        ema_alpha=0.8,
+        assoc_dist_thr=8.0,
+        max_misses=5,
+        dt=1.0,
+        q_pos=0.30,
+        q_vel=0.50,
+        r_pos=1.50,
     ):
         self.assoc_dist_thr = float(assoc_dist_thr)
         self.max_misses = int(max_misses)
-        self.min_hits = int(min_hits)
-        self.filter_type = str(filter_type).lower()
-        self.ema_alpha = float(ema_alpha)
+        self.dt = float(dt)
+
+        self.q_pos = float(q_pos)
+        self.q_vel = float(q_vel)
+        self.r_pos = float(r_pos)
 
         self.next_track_id = 1
         self.tracks = {}
 
-    def _match_greedy(self, cluster_centers):
-        cluster_ids = sorted(cluster_centers.keys())
-        track_ids = sorted(self.tracks.keys())
+    def _build_cost_matrix(self, cluster_centers):
+        track_ids = list(self.tracks.keys())
+        cluster_ids = list(cluster_centers.keys())
 
-        matches = {}
-        used_tracks = set()
+        cost = np.zeros((len(track_ids), len(cluster_ids)), dtype=float)
+        predictions = {}
 
-        for cid in cluster_ids:
-            c = np.asarray(cluster_centers[cid], dtype=float)
+        for tid in track_ids:
+            predictions[tid] = self.tracks[tid].predict()
 
-            best_tid = None
-            best_d = float("inf")
+        for i, tid in enumerate(track_ids):
+            pred = predictions[tid]
+            for j, cid in enumerate(cluster_ids):
+                c = cluster_centers[cid]
+                d = np.linalg.norm(pred - c)
+                cost[i, j] = d
 
-            for tid in track_ids:
-                if tid in used_tracks:
-                    continue
+        return cost, track_ids, cluster_ids
 
-                pred = self.tracks[tid].predict()
-                d = float(np.linalg.norm(c - pred))
-
-                if d < best_d:
-                    best_d = d
-                    best_tid = tid
-
-            if best_tid is not None and best_d <= self.assoc_dist_thr:
-                matches[cid] = best_tid
-                used_tracks.add(best_tid)
-
-        unmatched_clusters = [cid for cid in cluster_ids if cid not in matches]
-        unmatched_tracks = [tid for tid in track_ids if tid not in used_tracks]
-        return matches, unmatched_clusters, unmatched_tracks
+    def _new_track(self, center):
+        tid = self.next_track_id
+        self.next_track_id += 1
+        self.tracks[tid] = KalmanTrack(
+            track_id=tid,
+            center=center,
+            dt=self.dt,
+            q_pos=self.q_pos,
+            q_vel=self.q_vel,
+            r_pos=self.r_pos,
+        )
+        return tid
 
     def step(self, cluster_centers):
         cluster_centers = {
-            int(cid): np.asarray(center, dtype=float)
-            for cid, center in cluster_centers.items()
+            int(cid): np.asarray(c, dtype=float)
+            for cid, c in cluster_centers.items()
         }
-
-        matches, unmatched_clusters, unmatched_tracks = self._match_greedy(cluster_centers)
 
         filtered_centers = {}
         track_assignments = {}
         raw_centers = {}
 
-        # 1. 已匹配轨迹：更新
-        for cid, tid in matches.items():
-            raw_centers[cid] = cluster_centers[cid].copy()
-            filtered = self.tracks[tid].update(cluster_centers[cid])
-            filtered_centers[cid] = filtered
+        # 没有任何 cluster，所有现有 track 都记一次 missed
+        if len(cluster_centers) == 0:
+            to_delete = []
+            for tid, track in self.tracks.items():
+                track.mark_missed()
+                if track.miss_count > self.max_misses:
+                    to_delete.append(tid)
+            for tid in to_delete:
+                del self.tracks[tid]
+            return filtered_centers, track_assignments, raw_centers
+
+        # 当前没有 track：直接初始化
+        if len(self.tracks) == 0:
+            for cid, center in cluster_centers.items():
+                tid = self._new_track(center)
+                filtered_centers[cid] = center.copy()
+                track_assignments[cid] = tid
+                raw_centers[cid] = center.copy()
+            return filtered_centers, track_assignments, raw_centers
+
+        cost, track_ids, cluster_ids = self._build_cost_matrix(cluster_centers)
+
+        row_ind, col_ind = linear_sum_assignment(cost)
+
+        matched_tracks = set()
+        matched_clusters = set()
+
+        # 1) 匹配成功的 track 做 update
+        for r, c in zip(row_ind, col_ind):
+            if cost[r, c] > self.assoc_dist_thr:
+                continue
+
+            tid = track_ids[r]
+            cid = cluster_ids[c]
+
+            track = self.tracks[tid]
+            filtered = track.update(cluster_centers[cid])
+
+            filtered_centers[cid] = filtered.copy()
             track_assignments[cid] = tid
-
-        # 2. 未匹配 cluster：新建轨迹
-        for cid in unmatched_clusters:
-            tid = self.next_track_id
-            self.next_track_id += 1
-
-            self.tracks[tid] = Track(
-                track_id=tid,
-                center=cluster_centers[cid],
-                filter_type=self.filter_type,
-                ema_alpha=self.ema_alpha,
-            )
-
             raw_centers[cid] = cluster_centers[cid].copy()
-            filtered_centers[cid] = self.tracks[tid].filtered_center.copy()
-            track_assignments[cid] = tid
 
-        # 3. 未匹配旧轨迹：miss 计数
+            matched_tracks.add(tid)
+            matched_clusters.add(cid)
+
+        # 2) 未匹配 cluster：新建轨迹
+        for cid in cluster_ids:
+            if cid not in matched_clusters:
+                center = cluster_centers[cid]
+                tid = self._new_track(center)
+
+                filtered_centers[cid] = center.copy()
+                track_assignments[cid] = tid
+                raw_centers[cid] = center.copy()
+
+                matched_tracks.add(tid)  # 新建轨迹本帧视作已处理
+
+        # 3) 未匹配旧轨迹：miss 计数并按需删除
         to_delete = []
-        for tid in unmatched_tracks:
-            self.tracks[tid].mark_missed()
-            if self.tracks[tid].miss_count > self.max_misses:
-                to_delete.append(tid)
+        for tid, track in self.tracks.items():
+            if tid not in matched_tracks:
+                track.mark_missed()
+                if track.miss_count > self.max_misses:
+                    to_delete.append(tid)
 
         for tid in to_delete:
             del self.tracks[tid]
