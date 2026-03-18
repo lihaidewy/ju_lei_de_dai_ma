@@ -13,13 +13,16 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from mylib.cluster_frame_dbscan import cluster_frame_dbscan
 from centers import compute_center_with_optional_velocity_filter
 
+try:
+    from centers import get_fixed_box_prior_candidates
+except Exception:
+    get_fixed_box_prior_candidates = None
 
 
 def load_all_data(cfg):
     gt_df = load_gt_reference(cfg.GT_PATH, H=6.0)
     radar_data = load_data(cfg.RADAR_PATH)
     return radar_data, gt_df
-
 
 
 def get_frame_ids(radar_data, gt_df, cfg, args):
@@ -39,14 +42,12 @@ def get_frame_ids(radar_data, gt_df, cfg, args):
     return frame_ids
 
 
-
 def build_gt_list_for_frame(gt_df, fid):
     g = gt_df[gt_df["Frame"] == fid]
     return [
         {"id": int(r.ID), "x": float(r.X), "y": float(r.Y), "model": int(r.model)}
         for r in g.itertuples(index=False)
     ]
-
 
 
 def build_gt_maps(gt_list):
@@ -67,7 +68,6 @@ def build_gt_maps(gt_list):
     return gt_map, gt_model_map, gt_pos_map
 
 
-
 def cluster_one_frame(radar_data, fid, cfg):
     return cluster_frame_dbscan(
         radar_data,
@@ -79,20 +79,166 @@ def cluster_one_frame(radar_data, fid, cfg):
     )
 
 
-
 def iter_valid_cluster_ids(labels):
     for cid in np.unique(labels):
         if int(cid) >= 1:
             yield int(cid)
 
 
+def _fallback_get_fixed_box_prior_candidates(cfg, model_id=None):
+    if model_id is not None:
+        model_priors = getattr(cfg, "GT_MODEL_PRIORS", {})
+        item = model_priors.get(int(model_id))
+        if item is not None:
+            return [(float(item["L"]), float(item["W"]))]
 
-def build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg):
+    priors = getattr(cfg, "FIXED_BOX_PRIORS", None)
+    if priors:
+        return [(float(l), float(w)) for l, w in priors]
+
+    model_priors = getattr(cfg, "GT_MODEL_PRIORS", {})
+    out = []
+    for mid in sorted(model_priors.keys()):
+        item = model_priors[mid]
+        out.append((float(item["L"]), float(item["W"])))
+    return out
+
+
+def _get_prior_candidates(cfg, model_id=None):
+    if get_fixed_box_prior_candidates is not None:
+        try:
+            return get_fixed_box_prior_candidates(cfg, model_id=model_id)
+        except TypeError:
+            return get_fixed_box_prior_candidates(cfg)
+    return _fallback_get_fixed_box_prior_candidates(cfg, model_id=model_id)
+
+
+def _guess_model_id_for_cluster(cpts, gt_list, cfg):
+    """
+    当前先用离线 nearest-GT 方式，为 fixed_box 选择模型先验。
+    后续接视觉时，只需要把这里替换成视觉输出即可。
+    """
+    if not gt_list:
+        return None
+
+    center0 = np.mean(np.asarray(cpts, dtype=float), axis=0)
+
+    best_model = None
+    best_dist = float("inf")
+    max_match_dist = float(getattr(cfg, "DIST_THR", 6.0)) * 2.0
+
+    for g in gt_list:
+        gt_center = np.array([float(g["x"]), float(g["y"])], dtype=float)
+        d = float(np.linalg.norm(center0 - gt_center))
+        if d < best_dist:
+            best_dist = d
+            best_model = int(g["model"])
+
+    if best_dist <= max_match_dist:
+        return best_model
+    return None
+
+
+def _box_score_axis_aligned(cpts, center, length, width, cfg):
+    """
+    简化版 fixed-box 打分：
+    - yaw 固定为 0
+    - X 对应宽度 W
+    - Y 对应长度 L
+    - 候选中心由不同 anchor 生成，再用 inside/outside 代价打分
+    """
+    cpts = np.asarray(cpts, dtype=float)
+    center = np.asarray(center, dtype=float)
+
+    half_w = 0.5 * float(width)
+    half_l = 0.5 * float(length)
+    margin = float(getattr(cfg, "FIXED_BOX_INSIDE_MARGIN", 0.2))
+    alpha_out = float(getattr(cfg, "FIXED_BOX_ALPHA_OUT", 10.0))
+    beta_in = float(getattr(cfg, "FIXED_BOX_BETA_IN", 2.0))
+    score_lambda = float(getattr(cfg, "FIXED_BOX_SCORE_LAMBDA", 1.0))
+
+    dx = np.abs(cpts[:, 0] - center[0]) - (half_w + margin)
+    dy = np.abs(cpts[:, 1] - center[1]) - (half_l + margin)
+
+    dx_pos = np.maximum(dx, 0.0)
+    dy_pos = np.maximum(dy, 0.0)
+    outside_penalty = np.sqrt(dx_pos ** 2 + dy_pos ** 2)
+
+    inside_mask = (dx <= 0.0) & (dy <= 0.0)
+    inside_ratio = float(np.mean(inside_mask)) if len(cpts) > 0 else 0.0
+
+    score = score_lambda * alpha_out * float(np.mean(outside_penalty)) - beta_in * inside_ratio
+    return score, inside_ratio, float(np.mean(outside_penalty))
+
+
+def _fit_center_fixed_box_with_priors(cpts, prior_candidates, cfg):
+    """
+    简化版 fixed-box center:
+    - 先枚举尺寸先验
+    - 再枚举 3 种 anchor:
+      1) bbox_center
+      2) rear_anchor  : min_y + L/2
+      3) front_anchor : max_y - L/2
+    - 最终选择 score 最小的候选中心
+    """
+    cpts = np.asarray(cpts, dtype=float)
+    x_med = float(np.median(cpts[:, 0]))
+    x_box_center = 0.5 * (float(np.min(cpts[:, 0])) + float(np.max(cpts[:, 0])))
+    y_min = float(np.min(cpts[:, 1]))
+    y_max = float(np.max(cpts[:, 1]))
+    y_box_center = 0.5 * (y_min + y_max)
+
+    best = None
+
+    for length, width in prior_candidates:
+        candidate_centers = [
+            np.array([x_box_center, y_box_center], dtype=float),
+            np.array([x_med, y_min + 0.5 * float(length)], dtype=float),
+            np.array([x_med, y_max - 0.5 * float(length)], dtype=float),
+        ]
+
+        for center in candidate_centers:
+            score, inside_ratio, outside_mean = _box_score_axis_aligned(
+                cpts=cpts,
+                center=center,
+                length=length,
+                width=width,
+                cfg=cfg,
+            )
+            item = {
+                "center": np.asarray(center, dtype=float),
+                "score": float(score),
+                "inside_ratio": float(inside_ratio),
+                "outside_mean": float(outside_mean),
+                "prior_l": float(length),
+                "prior_w": float(width),
+            }
+            if best is None or item["score"] < best["score"]:
+                best = item
+
+    if best is None:
+        return {
+            "center": np.mean(cpts, axis=0),
+            "score": float("nan"),
+            "inside_ratio": float("nan"),
+            "outside_mean": float("nan"),
+            "prior_l": float("nan"),
+            "prior_w": float("nan"),
+        }
+
+    return best
+
+
+def build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg, gt_list=None):
     """
     显式构建当前帧每个 cluster 的中心。
-    返回：{cid: np.array([x, y])}
+    返回：
+      cluster_centers: {cid: np.array([x, y])}
+      cluster_meta:    {cid: {...}}
     """
     cluster_centers = {}
+    cluster_meta = {}
+    mode = (getattr(cfg, "CLUSTER_CENTER_MODE", "mean") or "mean").lower().strip()
 
     for cid in iter_valid_cluster_ids(labels):
         mask = labels == cid
@@ -100,18 +246,48 @@ def build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg):
         if cpts.size == 0:
             continue
 
-        center = compute_center_with_optional_velocity_filter(
-            cpts=cpts,
-            frame_item=frame_item,
-            mask=mask,
-            center_fn=center_fn,
-            cfg=cfg,
-        )
+        if mode == "fixed_box":
+            model_id = None
+            if bool(getattr(cfg, "FIXED_BOX_USE_MODEL_PRIOR", False)):
+                model_id = _guess_model_id_for_cluster(cpts, gt_list or [], cfg)
+
+            prior_candidates = _get_prior_candidates(cfg, model_id=model_id)
+            if (not prior_candidates) and bool(getattr(cfg, "FIXED_BOX_FALLBACK_TO_ALL_PRIORS", True)):
+                prior_candidates = _get_prior_candidates(cfg, model_id=None)
+
+            fit_result = _fit_center_fixed_box_with_priors(cpts, prior_candidates, cfg)
+            center = fit_result["center"]
+            cluster_meta[int(cid)] = {
+                "center_mode": "fixed_box",
+                "selected_model_id": None if model_id is None else int(model_id),
+                "prior_l": float(fit_result["prior_l"]),
+                "prior_w": float(fit_result["prior_w"]),
+                "fit_score": float(fit_result["score"]),
+                "inside_ratio": float(fit_result["inside_ratio"]),
+                "outside_mean": float(fit_result["outside_mean"]),
+            }
+        else:
+            center = compute_center_with_optional_velocity_filter(
+                cpts=cpts,
+                frame_item=frame_item,
+                mask=mask,
+                center_fn=center_fn,
+                cfg=cfg,
+            )
+            cluster_meta[int(cid)] = {
+                "center_mode": mode,
+                "selected_model_id": np.nan,
+                "prior_l": np.nan,
+                "prior_w": np.nan,
+                "fit_score": np.nan,
+                "inside_ratio": np.nan,
+                "outside_mean": np.nan,
+            }
+
         center = bias_fn(center, cfg)
-        cluster_centers[cid] = np.asarray(center, dtype=float)
+        cluster_centers[int(cid)] = np.asarray(center, dtype=float)
 
-    return cluster_centers
-
+    return cluster_centers, cluster_meta
 
 
 def temporal_filter_cluster_centers_with_matches(cluster_centers, matches, tracker):
@@ -132,7 +308,6 @@ def temporal_filter_cluster_centers_with_matches(cluster_centers, matches, track
     return filtered_centers
 
 
-
 def build_cid_to_gid(matches):
     cid_to_gid = {}
     if matches is None:
@@ -144,7 +319,6 @@ def build_cid_to_gid(matches):
     return cid_to_gid
 
 
-
 def _assign_cluster_arrays(labels, cluster_values, default_value=np.nan):
     out = np.full(len(labels), default_value, dtype=float)
     for cid, value in cluster_values.items():
@@ -152,12 +326,16 @@ def _assign_cluster_arrays(labels, cluster_values, default_value=np.nan):
     return out
 
 
-
-def _append_center_columns(df, labels, cluster_centers, raw_cluster_centers):
+def _append_center_columns(df, labels, cluster_centers, raw_cluster_centers, cluster_meta=None):
     center_x_map = {}
     center_y_map = {}
     raw_center_x_map = {}
     raw_center_y_map = {}
+    prior_l_map = {}
+    prior_w_map = {}
+    selected_model_map = {}
+    fit_score_map = {}
+    inside_ratio_map = {}
 
     for cid, center in cluster_centers.items():
         center_x_map[int(cid)] = float(center[0])
@@ -168,11 +346,28 @@ def _append_center_columns(df, labels, cluster_centers, raw_cluster_centers):
             raw_center_x_map[int(cid)] = float(center[0])
             raw_center_y_map[int(cid)] = float(center[1])
 
+    if cluster_meta is not None:
+        for cid, meta in cluster_meta.items():
+            prior_l_map[int(cid)] = float(meta.get("prior_l", np.nan))
+            prior_w_map[int(cid)] = float(meta.get("prior_w", np.nan))
+            selected_model_map[int(cid)] = float(meta.get("selected_model_id", np.nan)) if meta.get("selected_model_id") is not None else np.nan
+            fit_score_map[int(cid)] = float(meta.get("fit_score", np.nan))
+            inside_ratio_map[int(cid)] = float(meta.get("inside_ratio", np.nan))
+
     df["Raw_Center_X"] = _assign_cluster_arrays(labels, raw_center_x_map)
     df["Raw_Center_Y"] = _assign_cluster_arrays(labels, raw_center_y_map)
     df["Center_X"] = _assign_cluster_arrays(labels, center_x_map)
     df["Center_Y"] = _assign_cluster_arrays(labels, center_y_map)
+    df["Prior_L"] = _assign_cluster_arrays(labels, prior_l_map)
+    df["Prior_W"] = _assign_cluster_arrays(labels, prior_w_map)
+    df["Selected_Model_ID"] = _assign_cluster_arrays(labels, selected_model_map)
+    df["FixedBox_Score"] = _assign_cluster_arrays(labels, fit_score_map)
+    df["FixedBox_InsideRatio"] = _assign_cluster_arrays(labels, inside_ratio_map)
 
+    for col in ["Selected_Model_ID"]:
+        valid_mask = df[col].notna()
+        if valid_mask.any():
+            df.loc[valid_mask, col] = df.loc[valid_mask, col].astype(int)
 
 
 def _append_id_columns(df, labels, cid_to_gid, track_assignments):
@@ -195,7 +390,6 @@ def _append_id_columns(df, labels, cid_to_gid, track_assignments):
             df.loc[valid_mask, col] = df.loc[valid_mask, col].astype(int)
 
 
-
 def build_point_level_table_from_centers(
     fid,
     frame_item,
@@ -204,24 +398,16 @@ def build_point_level_table_from_centers(
     matches=None,
     track_assignments=None,
     raw_cluster_centers=None,
+    cluster_meta=None,
 ):
-    """
-    用外部传入的 cluster_centers 构建点级表。
-    保留原始表格列顺序，只在右侧追加结果列。
-
-    新增:
-    - track_id
-    - Raw_Center_X / Raw_Center_Y
-    """
     df = frame_item.copy().reset_index(drop=True)
     df["Label"] = labels
 
     cid_to_gid = build_cid_to_gid(matches)
     _append_id_columns(df, labels, cid_to_gid, track_assignments)
-    _append_center_columns(df, labels, cluster_centers, raw_cluster_centers)
+    _append_center_columns(df, labels, cluster_centers, raw_cluster_centers, cluster_meta=cluster_meta)
 
     return df
-
 
 
 def _build_eval_summary(matches, cids, gts):
@@ -309,12 +495,7 @@ def _build_eval_summary(matches, cids, gts):
     }
 
 
-
 def evaluate_with_given_centers(cluster_centers, gt_list, dist_thr=6.0):
-    """
-    用外部给定的 cluster centers 和 gt_list 重新做一个简单匹配评估。
-    这里先做 greedy nearest matching，仅用于 EMA / Kalman 验证。
-    """
     gts = []
     for g in gt_list:
         gts.append(
@@ -364,9 +545,16 @@ def evaluate_with_given_centers(cluster_centers, gt_list, dist_thr=6.0):
     return _build_eval_summary(matches, cids, gts)
 
 
-
-def build_point_level_table(fid, frame_item, pts, labels, center_fn, bias_fn, cfg):
-    cluster_centers = build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg)
+def build_point_level_table(fid, frame_item, pts, labels, center_fn, bias_fn, cfg, gt_list=None):
+    cluster_centers, cluster_meta = build_cluster_centers(
+        labels=labels,
+        pts=pts,
+        frame_item=frame_item,
+        center_fn=center_fn,
+        bias_fn=bias_fn,
+        cfg=cfg,
+        gt_list=gt_list,
+    )
     return build_point_level_table_from_centers(
         fid=fid,
         frame_item=frame_item,
@@ -375,8 +563,8 @@ def build_point_level_table(fid, frame_item, pts, labels, center_fn, bias_fn, cf
         matches=None,
         track_assignments=None,
         raw_cluster_centers=None,
+        cluster_meta=cluster_meta,
     )
-
 
 
 def process_one_frame(fid, radar_data, gt_df, fit_mode, cfg, center_fn, bias_fn, tracker=None):
@@ -388,7 +576,15 @@ def process_one_frame(fid, radar_data, gt_df, fit_mode, cfg, center_fn, bias_fn,
     gt_list = build_gt_list_for_frame(gt_df, fid)
     gt_map, gt_model_map, gt_pos_map = build_gt_maps(gt_list)
 
-    cluster_centers_raw = build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg)
+    cluster_centers_raw, cluster_meta_raw = build_cluster_centers(
+        labels=labels,
+        pts=pts,
+        frame_item=frame_item,
+        center_fn=center_fn,
+        bias_fn=bias_fn,
+        cfg=cfg,
+        gt_list=gt_list,
+    )
 
     track_assignments = {}
     cluster_centers_filtered = cluster_centers_raw
@@ -420,6 +616,7 @@ def process_one_frame(fid, radar_data, gt_df, fit_mode, cfg, center_fn, bias_fn,
         matches=metrics.get("matches", []),
         track_assignments=track_assignments,
         raw_cluster_centers=raw_centers_for_export,
+        cluster_meta=cluster_meta_raw,
     )
 
     cache_item = {
@@ -434,6 +631,7 @@ def process_one_frame(fid, radar_data, gt_df, fit_mode, cfg, center_fn, bias_fn,
         "metrics_raw": metrics_raw,
         "cluster_centers": cluster_centers_filtered,
         "cluster_centers_raw": cluster_centers_raw,
+        "cluster_meta_raw": cluster_meta_raw,
         "track_assignments": track_assignments,
     }
 
@@ -449,13 +647,6 @@ def process_one_frame(fid, radar_data, gt_df, fit_mode, cfg, center_fn, bias_fn,
     }
 
 
-
 def temporal_filter_cluster_centers_online(cluster_centers, tracker):
-    """
-    真正的在线时序滤波：
-    - 不依赖 GT
-    - 先 cluster-to-track 关联
-    - 再做 EMA / Kalman 平滑
-    """
     filtered_centers, track_assignments, raw_centers = tracker.step(cluster_centers)
     return filtered_centers, track_assignments, raw_centers

@@ -1,7 +1,7 @@
 import argparse
 import matplotlib.pyplot as plt
 
-from centers import apply_two_segment_bias, get_center_function
+from centers import get_bias_function, get_center_function
 from config import Config
 from data_pipeline import get_frame_ids, load_all_data, process_one_frame
 from debug_tracking import TrackingDebugTool
@@ -11,52 +11,46 @@ from stats_utils import init_stats, print_global_summary, update_range_bias_stat
 from viz_utils import render_frame
 
 
+CENTER_MODE_CHOICES = [
+    "mean",
+    "median",
+    "snr_mean",
+    "trimmed_mean",
+    "mean_x_median_y",
+    "velocity_mean",
+    "velocity_trimmed_mean",
+    "fixed_box",
+]
+
+BIAS_MODE_CHOICES = [
+    "two_segment",
+    "none",
+]
+
+
 def parse_args():
     defaults = Config()
     p = argparse.ArgumentParser()
     p.add_argument("--fit_mode", type=str, default="center", choices=["center", "edge"])
     p.add_argument("--max_frames", type=int, default=defaults.MAX_FRAMES_TO_VIEW)
-    p.add_argument(
-        "--tracker_method",
-        type=str,
-        default=getattr(defaults, "TRACKER_METHOD", "cv"),
-        choices=["cv", "ca", "cv_robust"],
-        help="cv: 原方法; ca: 恒加速度+马氏门控; cv_robust: 匀速+鲁棒关联",
-    )
-    p.add_argument(
-        "--assoc_metric",
-        type=str,
-        default=getattr(defaults, "TRACK_ASSOC_METRIC", "euclidean"),
-        choices=["euclidean", "mahalanobis"],
-        help="轨迹关联代价类型",
-    )
+
+    p.add_argument("--center_mode", type=str, default=defaults.CLUSTER_CENTER_MODE, choices=CENTER_MODE_CHOICES)
+    p.add_argument("--bias_mode", type=str, default=defaults.BIAS_MODE, choices=BIAS_MODE_CHOICES)
+    p.add_argument("--trim_ratio", type=float, default=defaults.TRIMMED_MEAN_RATIO)
+
     return p.parse_args()
 
 
-def build_tracker(cfg, args):
+def build_tracker(cfg):
     if not getattr(cfg, "USE_ONLINE_TRACKER", False):
         return None
-
     return OnlineTrackerManager(
-        method=getattr(args, "tracker_method", getattr(cfg, "TRACKER_METHOD", "cv")),
-        assoc_metric=getattr(args, "assoc_metric", getattr(cfg, "TRACK_ASSOC_METRIC", "euclidean")),
         assoc_dist_thr=cfg.TRACK_ASSOC_DIST_THR,
-        assoc_mahal_thr=getattr(cfg, "TRACK_ASSOC_MAHAL_THR", 3.5),
         max_misses=cfg.TRACK_MAX_MISSES,
         dt=cfg.KF_DT,
         q_pos=cfg.KF_Q_POS,
         q_vel=cfg.KF_Q_VEL,
-        q_acc=getattr(cfg, "KF_Q_ACC", 0.20),
         r_pos=cfg.KF_R_POS,
-        init_pos_var=getattr(cfg, "KF_INIT_POS_VAR", 4.0),
-        init_vel_var=getattr(cfg, "KF_INIT_VEL_VAR", 9.0),
-        init_acc_var=getattr(cfg, "KF_INIT_ACC_VAR", 16.0),
-        use_adaptive_r=getattr(cfg, "KF_USE_ADAPTIVE_R", False),
-        adaptive_r_gain=getattr(cfg, "KF_ADAPTIVE_R_GAIN", 0.25),
-        min_r_scale=getattr(cfg, "KF_MIN_R_SCALE", 0.75),
-        max_r_scale=getattr(cfg, "KF_MAX_R_SCALE", 4.0),
-        enable_output_ema=getattr(cfg, "TRACK_ENABLE_OUTPUT_EMA", False),
-        output_ema_alpha=getattr(cfg, "TRACK_OUTPUT_EMA_ALPHA", 0.65),
     )
 
 
@@ -125,11 +119,8 @@ def run_pipeline(frame_ids, radar_data, gt_df, args, cfg, center_fn, bias_fn, tr
         metrics_filtered = result.get("metrics")
         if metrics_raw is not None and metrics_filtered is not None:
             print(
-                "[Frame {fid}] raw_mean_err={raw:.3f} -> filtered_mean_err={filt:.3f}".format(
-                    fid=fid,
-                    raw=metrics_raw["mean_center_error"],
-                    filt=metrics_filtered["mean_center_error"],
-                )
+                "[Frame %s] raw_mean_err=%.3f -> filtered_mean_err=%.3f"
+                % (fid, metrics_raw["mean_center_error"], metrics_filtered["mean_center_error"])
             )
 
         if debug_tool is not None:
@@ -185,17 +176,23 @@ def main():
     args = parse_args()
     cfg = Config()
 
+    cfg.CLUSTER_CENTER_MODE = args.center_mode
+    cfg.BIAS_MODE = args.bias_mode
+    cfg.TRIMMED_MEAN_RATIO = float(args.trim_ratio)
+
     radar_data, gt_df = load_all_data(cfg)
     frame_ids = get_frame_ids(radar_data, gt_df, cfg, args)
 
     print("Will view frames:", frame_ids[:10], "..." if len(frame_ids) > 10 else "")
     print("FIT MODE:", args.fit_mode)
-    print("TRACKER METHOD:", getattr(args, "tracker_method", getattr(cfg, "TRACKER_METHOD", "cv")))
-    print("ASSOC METRIC:", getattr(args, "assoc_metric", getattr(cfg, "TRACK_ASSOC_METRIC", "euclidean")))
+    print("CENTER MODE:", cfg.CLUSTER_CENTER_MODE)
+    print("BIAS MODE:", cfg.BIAS_MODE)
+    print("TRIM RATIO:", cfg.TRIMMED_MEAN_RATIO)
+    print("MODEL PRIORS:", cfg.GT_MODEL_PRIORS)
 
     center_fn = get_center_function(cfg.CLUSTER_CENTER_MODE)
-    bias_fn = apply_two_segment_bias
-    tracker = build_tracker(cfg, args)
+    bias_fn = get_bias_function(cfg.BIAS_MODE)
+    tracker = build_tracker(cfg)
     debug_tool = TrackingDebugTool() if cfg.ENABLE_TEMPORAL_DEBUG else None
 
     stats, point_tables, cache, tp_match_rows, range_bins, range_bias_stats = run_pipeline(
