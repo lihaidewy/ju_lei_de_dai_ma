@@ -1,6 +1,7 @@
 import argparse
 import matplotlib.pyplot as plt
 
+from animated_viewer import launch_animated_viewer
 from centers import get_bias_function, get_center_function
 from config import Config
 from data_pipeline import get_frame_ids, load_all_data, process_one_frame
@@ -44,13 +45,27 @@ def parse_args():
 def build_tracker(cfg):
     if not getattr(cfg, "USE_ONLINE_TRACKER", False):
         return None
+
     return OnlineTrackerManager(
+        method=getattr(cfg, "TRACKER_METHOD", "cv"),
+        assoc_metric=getattr(cfg, "TRACK_ASSOC_METRIC", "euclidean"),
         assoc_dist_thr=cfg.TRACK_ASSOC_DIST_THR,
+        assoc_mahal_thr=getattr(cfg, "TRACK_ASSOC_MAHAL_THR", 3.5),
         max_misses=cfg.TRACK_MAX_MISSES,
         dt=cfg.KF_DT,
         q_pos=cfg.KF_Q_POS,
         q_vel=cfg.KF_Q_VEL,
+        q_acc=getattr(cfg, "KF_Q_ACC", 0.20),
         r_pos=cfg.KF_R_POS,
+        init_pos_var=getattr(cfg, "KF_INIT_POS_VAR", 4.0),
+        init_vel_var=getattr(cfg, "KF_INIT_VEL_VAR", 9.0),
+        init_acc_var=getattr(cfg, "KF_INIT_ACC_VAR", 16.0),
+        use_adaptive_r=getattr(cfg, "KF_USE_ADAPTIVE_R", False),
+        adaptive_r_gain=getattr(cfg, "KF_ADAPTIVE_R_GAIN", 0.25),
+        min_r_scale=getattr(cfg, "KF_MIN_R_SCALE", 0.75),
+        max_r_scale=getattr(cfg, "KF_MAX_R_SCALE", 4.0),
+        enable_output_ema=getattr(cfg, "TRACK_ENABLE_OUTPUT_EMA", False),
+        output_ema_alpha=getattr(cfg, "TRACK_OUTPUT_EMA_ALPHA", 0.85),
     )
 
 
@@ -153,7 +168,7 @@ def export_results(cfg, point_tables, tp_match_rows):
     export_tp_matches_excel(tp_match_rows, cfg.TP_MATCH_XLSX_PATH)
 
 
-def launch_viewer(cache, frame_ids, args, cfg):
+def launch_viewer(cache, frame_ids, cfg, fit_mode="center"):
     fig, axes = plt.subplots(1, 2, figsize=(12, 10), sharex=True, sharey=True)
     plt.subplots_adjust(bottom=0.08)
     state = {"i": 0}
@@ -161,14 +176,14 @@ def launch_viewer(cache, frame_ids, args, cfg):
     def on_key(event):
         key = (event.key or "").lower()
         if key == "n":
-            render_frame(fig, axes, cache, frame_ids, len(frame_ids), state, state["i"] + 1, args.fit_mode, cfg)
+            render_frame(fig, axes, cache, frame_ids, len(frame_ids), state, state["i"] + 1, fit_mode, cfg)
         elif key == "p":
-            render_frame(fig, axes, cache, frame_ids, len(frame_ids), state, state["i"] - 1, args.fit_mode, cfg)
+            render_frame(fig, axes, cache, frame_ids, len(frame_ids), state, state["i"] - 1, fit_mode, cfg)
         elif key in ("q", "escape"):
             plt.close(fig)
 
     fig.canvas.mpl_connect("key_press_event", on_key)
-    render_frame(fig, axes, cache, frame_ids, len(frame_ids), state, 0, args.fit_mode, cfg)
+    render_frame(fig, axes, cache, frame_ids, len(frame_ids), state, 0, fit_mode, cfg)
     return fig, axes
 
 
@@ -189,6 +204,7 @@ def main():
     print("BIAS MODE:", cfg.BIAS_MODE)
     print("TRIM RATIO:", cfg.TRIMMED_MEAN_RATIO)
     print("MODEL PRIORS:", cfg.GT_MODEL_PRIORS)
+    print("VIEWER MODE:", cfg.VIEWER_MODE)
 
     center_fn = get_center_function(cfg.CLUSTER_CENTER_MODE)
     bias_fn = get_bias_function(cfg.BIAS_MODE)
@@ -208,7 +224,13 @@ def main():
     )
 
     export_results(cfg, point_tables, tp_match_rows)
-    launch_viewer(cache, frame_ids, args, cfg)
+
+    if cfg.VIEWER_ENABLE:
+        if str(getattr(cfg, "VIEWER_MODE", "static")).lower() == "animated":
+            launch_animated_viewer(cache, frame_ids, cfg, fit_mode=args.fit_mode)
+        else:
+            launch_viewer(cache, frame_ids, cfg, fit_mode=args.fit_mode)
+
     print_global_summary(frame_ids, stats, range_bins, range_bias_stats)
 
     if debug_tool is not None:
