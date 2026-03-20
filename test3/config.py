@@ -49,9 +49,9 @@ class Config:
     # ------------------------------------------------------------
     # Center mode:
     # mean / median / snr_mean / trimmed_mean / mean_x_median_y
-    # velocity_mean / velocity_trimmed_mean / fixed_box
+    # velocity_mean / velocity_trimmed_mean / fixed_box / bottom_half_length
     # ------------------------------------------------------------
-    CLUSTER_CENTER_MODE: str = "fixed_box"  # mean0.909, median0.953, snr_mean0.912
+    CLUSTER_CENTER_MODE: str = "bottom_half_length"  
 
     USE_VELOCITY_FILTER: bool = False
     VELOCITY_FILTER_THR: float = 1.2
@@ -64,8 +64,8 @@ class Config:
     CENTER_BIAS_X: float = 0.0
     USE_RANGE_BIAS_Y: bool = True
     BIAS_SPLIT_Y: float = 100.0
-    BIAS_Y_NEAR: float = 1.301
-    BIAS_Y_FAR: float = 1.732
+    BIAS_Y_NEAR: float = 0.434
+    BIAS_Y_FAR: float = 1.581
 
     EXPORT_CSV_PATH: str = "data/radar_points_with_labels.csv"
     EXPORT_XLSX_PATH: str = "data/radar_points_with_labels.xlsx"
@@ -150,7 +150,7 @@ class Config:
     # ------------------------------------------------------------------
     # Animation export
     # ------------------------------------------------------------------
-    EXPORT_ANIMATION: bool = True
+    EXPORT_ANIMATION: bool = False
     EXPORT_ANIMATION_FORMAT: str = "gif"   # "gif" / "mp4"
     EXPORT_ANIMATION_PATH: str = "data/result_fixed_box_bias_ema.gif"
 

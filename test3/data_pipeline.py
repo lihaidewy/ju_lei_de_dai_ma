@@ -228,6 +228,39 @@ def _fit_center_fixed_box_with_priors(cpts, prior_candidates, cfg):
 
     return best
 
+def _fit_center_bottom_half_length_with_priors(cpts, prior_candidates):
+    """
+    bottom_half_length:
+    - x 用 cluster 横向中位数
+    - x 用 cluster 横向均值
+    - y 用 cluster 最底部点 min_y + L/2
+    - 如果有多个 prior，就逐个生成候选；当前先取第一个
+      （通常 model prior 已经会把候选缩到 1 个）
+    """
+    cpts = np.asarray(cpts, dtype=float)
+
+    # x_med = float(np.median(cpts[:, 0]))
+    x_med = float(np.mean(cpts[:, 0]))
+    y_bottom = float(np.min(cpts[:, 1]))
+
+    if not prior_candidates:
+        center = np.array([x_med, y_bottom], dtype=float)
+        return {
+            "center": center,
+            "bottom_y": y_bottom,
+            "prior_l": float("nan"),
+            "prior_w": float("nan"),
+        }
+
+    length, width = prior_candidates[0]
+    center = np.array([x_med, y_bottom + 0.5 * float(length)], dtype=float)
+    return {
+        "center": center,
+        "bottom_y": y_bottom,
+        "prior_l": float(length),
+        "prior_w": float(width),
+    }
+
 
 def build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg, gt_list=None):
     """
@@ -265,7 +298,33 @@ def build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg, gt_l
                 "fit_score": float(fit_result["score"]),
                 "inside_ratio": float(fit_result["inside_ratio"]),
                 "outside_mean": float(fit_result["outside_mean"]),
+                "bottom_y": np.nan,
+                "raw_bottom_center_y": np.nan,
             }
+
+        elif mode == "bottom_half_length":
+            model_id = None
+            if bool(getattr(cfg, "FIXED_BOX_USE_MODEL_PRIOR", False)):
+                model_id = _guess_model_id_for_cluster(cpts, gt_list or [], cfg)
+
+            prior_candidates = _get_prior_candidates(cfg, model_id=model_id)
+            if (not prior_candidates) and bool(getattr(cfg, "FIXED_BOX_FALLBACK_TO_ALL_PRIORS", True)):
+                prior_candidates = _get_prior_candidates(cfg, model_id=None)
+
+            fit_result = _fit_center_bottom_half_length_with_priors(cpts, prior_candidates)
+            center = fit_result["center"]
+            cluster_meta[int(cid)] = {
+                "center_mode": "bottom_half_length",
+                "selected_model_id": None if model_id is None else int(model_id),
+                "prior_l": float(fit_result["prior_l"]),
+                "prior_w": float(fit_result["prior_w"]),
+                "fit_score": np.nan,
+                "inside_ratio": np.nan,
+                "outside_mean": np.nan,
+                "bottom_y": float(fit_result["bottom_y"]),
+                "raw_bottom_center_y": float(center[1]),
+            }
+
         else:
             center = compute_center_with_optional_velocity_filter(
                 cpts=cpts,
@@ -282,6 +341,8 @@ def build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg, gt_l
                 "fit_score": np.nan,
                 "inside_ratio": np.nan,
                 "outside_mean": np.nan,
+                "bottom_y": np.nan,
+                "raw_bottom_center_y": np.nan,
             }
 
         center = bias_fn(center, cfg)
@@ -336,6 +397,8 @@ def _append_center_columns(df, labels, cluster_centers, raw_cluster_centers, clu
     selected_model_map = {}
     fit_score_map = {}
     inside_ratio_map = {}
+    bottom_y_map = {}
+    raw_bottom_center_y_map = {}
 
     for cid, center in cluster_centers.items():
         center_x_map[int(cid)] = float(center[0])
@@ -353,6 +416,8 @@ def _append_center_columns(df, labels, cluster_centers, raw_cluster_centers, clu
             selected_model_map[int(cid)] = float(meta.get("selected_model_id", np.nan)) if meta.get("selected_model_id") is not None else np.nan
             fit_score_map[int(cid)] = float(meta.get("fit_score", np.nan))
             inside_ratio_map[int(cid)] = float(meta.get("inside_ratio", np.nan))
+            bottom_y_map[int(cid)] = float(meta.get("bottom_y", np.nan))
+            raw_bottom_center_y_map[int(cid)] = float(meta.get("raw_bottom_center_y", np.nan))
 
     df["Raw_Center_X"] = _assign_cluster_arrays(labels, raw_center_x_map)
     df["Raw_Center_Y"] = _assign_cluster_arrays(labels, raw_center_y_map)
@@ -363,6 +428,8 @@ def _append_center_columns(df, labels, cluster_centers, raw_cluster_centers, clu
     df["Selected_Model_ID"] = _assign_cluster_arrays(labels, selected_model_map)
     df["FixedBox_Score"] = _assign_cluster_arrays(labels, fit_score_map)
     df["FixedBox_InsideRatio"] = _assign_cluster_arrays(labels, inside_ratio_map)
+    df["Bottom_Y"] = _assign_cluster_arrays(labels, bottom_y_map)
+    df["Raw_Bottom_Center_Y"] = _assign_cluster_arrays(labels, raw_bottom_center_y_map)
 
     for col in ["Selected_Model_ID"]:
         valid_mask = df[col].notna()

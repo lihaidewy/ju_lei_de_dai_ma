@@ -21,6 +21,7 @@ CENTER_MODE_CHOICES = [
     "velocity_mean",
     "velocity_trimmed_mean",
     "fixed_box",
+    "bottom_half_length",
 ]
 
 BIAS_MODE_CHOICES = [

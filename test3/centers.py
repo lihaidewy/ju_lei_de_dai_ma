@@ -106,7 +106,7 @@ def get_center_function(mode: str):
     if mode == "mean_x_median_y":
         return compute_center_mean_x_median_y
 
-    if mode in ("velocity_mean", "velocity_trimmed_mean", "fixed_box"):
+    if mode in ("velocity_mean", "velocity_trimmed_mean", "fixed_box", "bottom_half_length"):
         # 这些模式的实际逻辑放在 data_pipeline / compute_center_with_optional_velocity_filter 中
         return compute_center_mean
 
