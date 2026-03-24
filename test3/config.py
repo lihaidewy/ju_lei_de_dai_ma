@@ -51,7 +51,7 @@ class Config:
     # mean / median / snr_mean / trimmed_mean / mean_x_median_y
     # velocity_mean / velocity_trimmed_mean / fixed_box / bottom_half_length
     # ------------------------------------------------------------
-    CLUSTER_CENTER_MODE: str = "bottom_half_length"  
+    CLUSTER_CENTER_MODE: str = "bottom_half_length"
 
     USE_VELOCITY_FILTER: bool = False
     VELOCITY_FILTER_THR: float = 1.2
@@ -66,6 +66,14 @@ class Config:
     BIAS_SPLIT_Y: float = 100.0
     BIAS_Y_NEAR: float = 0.434
     BIAS_Y_FAR: float = 1.581
+
+    # ------------------------------------------------------------
+    # bottom_half_length 的稳健底点参数
+    # - 在 y 最小的前 k 个点中，再取 mean / median
+    # - 默认用 median，更稳健
+    # ------------------------------------------------------------
+    BOTTOM_ROBUST_K: int = 1
+    BOTTOM_ROBUST_MIN_MODE: str = "median"   # "median" 或 "mean"
 
     EXPORT_CSV_PATH: str = "data/radar_points_with_labels.csv"
     EXPORT_XLSX_PATH: str = "data/radar_points_with_labels.xlsx"
@@ -83,7 +91,7 @@ class Config:
 
     # Association
     TRACK_ASSOC_METRIC: str = "euclidean"   # euclidean / mahalanobis
-    TRACK_ASSOC_DIST_THR: float = 5.0
+    TRACK_ASSOC_DIST_THR: float = 6.0
     TRACK_ASSOC_MAHAL_THR: float = 3.5
 
     TRACK_MAX_MISSES: int = 20
@@ -117,7 +125,7 @@ class Config:
     # Viewer / Animation
     # ------------------------------------------------------------------
     VIEWER_ENABLE: bool = True
-    VIEWER_MODE: str = "animated"   # "static" / "animated"
+    VIEWER_MODE: str = "static"   # "static" / "animated"
 
     # animation behavior
     ANIM_AUTOPLAY: bool = True
@@ -158,5 +166,5 @@ class Config:
     EXPORT_ANIMATION_DPI: int = 120
 
     # True: 导出所有 frame_ids
-    # False: 只导出当前 viewer 中的序列（你现在其实也是 frame_ids 全部）
+    # False: 只导出当前 viewer 中的序列
     EXPORT_ANIMATION_ALL_FRAMES: bool = True

@@ -228,20 +228,43 @@ def _fit_center_fixed_box_with_priors(cpts, prior_candidates, cfg):
 
     return best
 
-def _fit_center_bottom_half_length_with_priors(cpts, prior_candidates):
+
+def _robust_bottom_y(cpts, cfg):
+    """
+    用 cluster 中 y 最小的前 k 个点，做稳健底点估计。
+    支持 mean / median。
+    """
+    cpts = np.asarray(cpts, dtype=float)
+    ys = np.sort(cpts[:, 1])
+
+    if ys.size == 0:
+        return float("nan")
+
+    k = int(getattr(cfg, "BOTTOM_ROBUST_K", 3))
+    mode = str(getattr(cfg, "BOTTOM_ROBUST_MIN_MODE", "median")).lower().strip()
+
+    k = max(1, min(k, ys.size))
+    bottom_slice = ys[:k]
+
+    if mode == "mean":
+        return float(np.mean(bottom_slice))
+    if mode == "median":
+        return float(np.median(bottom_slice))
+
+    raise ValueError(f"Unsupported BOTTOM_ROBUST_MIN_MODE: {mode}")
+
+
+def _fit_center_bottom_half_length_with_priors(cpts, prior_candidates, cfg):
     """
     bottom_half_length:
     - x 用 cluster 横向中位数
-    - x 用 cluster 横向均值
-    - y 用 cluster 最底部点 min_y + L/2
-    - 如果有多个 prior，就逐个生成候选；当前先取第一个
-      （通常 model prior 已经会把候选缩到 1 个）
+    - y 用稳健底点 robust_bottom_y + L/2
+    - 如果有多个 prior，当前先取第一个
     """
     cpts = np.asarray(cpts, dtype=float)
 
-    # x_med = float(np.median(cpts[:, 0]))
-    x_med = float(np.mean(cpts[:, 0]))
-    y_bottom = float(np.min(cpts[:, 1]))
+    x_med = float(np.median(cpts[:, 0]))
+    y_bottom = _robust_bottom_y(cpts, cfg)
 
     if not prior_candidates:
         center = np.array([x_med, y_bottom], dtype=float)
@@ -288,8 +311,10 @@ def build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg, gt_l
             if (not prior_candidates) and bool(getattr(cfg, "FIXED_BOX_FALLBACK_TO_ALL_PRIORS", True)):
                 prior_candidates = _get_prior_candidates(cfg, model_id=None)
 
+            # 修正：fixed_box 必须调用 fixed_box 版本
             fit_result = _fit_center_fixed_box_with_priors(cpts, prior_candidates, cfg)
             center = fit_result["center"]
+
             cluster_meta[int(cid)] = {
                 "center_mode": "fixed_box",
                 "selected_model_id": None if model_id is None else int(model_id),
@@ -311,8 +336,10 @@ def build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg, gt_l
             if (not prior_candidates) and bool(getattr(cfg, "FIXED_BOX_FALLBACK_TO_ALL_PRIORS", True)):
                 prior_candidates = _get_prior_candidates(cfg, model_id=None)
 
-            fit_result = _fit_center_bottom_half_length_with_priors(cpts, prior_candidates)
+            # 修正：bottom_half_length 必须把 cfg 传进去
+            fit_result = _fit_center_bottom_half_length_with_priors(cpts, prior_candidates, cfg)
             center = fit_result["center"]
+
             cluster_meta[int(cid)] = {
                 "center_mode": "bottom_half_length",
                 "selected_model_id": None if model_id is None else int(model_id),
@@ -413,7 +440,10 @@ def _append_center_columns(df, labels, cluster_centers, raw_cluster_centers, clu
         for cid, meta in cluster_meta.items():
             prior_l_map[int(cid)] = float(meta.get("prior_l", np.nan))
             prior_w_map[int(cid)] = float(meta.get("prior_w", np.nan))
-            selected_model_map[int(cid)] = float(meta.get("selected_model_id", np.nan)) if meta.get("selected_model_id") is not None else np.nan
+            selected_model_map[int(cid)] = (
+                float(meta.get("selected_model_id", np.nan))
+                if meta.get("selected_model_id") is not None else np.nan
+            )
             fit_score_map[int(cid)] = float(meta.get("fit_score", np.nan))
             inside_ratio_map[int(cid)] = float(meta.get("inside_ratio", np.nan))
             bottom_y_map[int(cid)] = float(meta.get("bottom_y", np.nan))
