@@ -94,6 +94,18 @@ class Config:
     TRACK_ASSOC_DIST_THR: float = 6.0
     TRACK_ASSOC_MAHAL_THR: float = 3.5
 
+    # ------------------------------------------------------------
+    # Velocity-aware association
+    # - cluster side uses vr_median
+    # - track side keeps a radial-speed EMA
+    # - apply velocity gate first, then add soft velocity cost
+    # ------------------------------------------------------------
+    TRACK_USE_VEL_ASSOC: bool = True
+    TRACK_ASSOC_VEL_THR: float = 2.0
+    TRACK_ASSOC_W_POS: float = 1.0
+    TRACK_ASSOC_W_VEL: float = 1.2
+    TRACK_VEL_EMA_ALPHA: float = 0.6
+
     TRACK_MAX_MISSES: int = 20
     # ------------------------------------------------------------
     # Track confirmation:

@@ -285,6 +285,42 @@ def _fit_center_bottom_half_length_with_priors(cpts, prior_candidates, cfg):
     }
 
 
+def _build_cluster_velocity_stats(frame_item, mask):
+    """
+    为当前 cluster 提取速度统计。
+    当前先使用雷达 V 的稳健统计：
+      - vr_mean
+      - vr_median
+      - vr_std
+      - num_points
+    """
+    if "V" not in frame_item:
+        return {
+            "num_points": int(np.sum(mask)),
+            "vr_mean": np.nan,
+            "vr_median": np.nan,
+            "vr_std": np.nan,
+        }
+
+    vv = np.asarray(frame_item["V"])[mask]
+    vv = np.asarray(vv, dtype=float)
+
+    if vv.size == 0:
+        return {
+            "num_points": 0,
+            "vr_mean": np.nan,
+            "vr_median": np.nan,
+            "vr_std": np.nan,
+        }
+
+    return {
+        "num_points": int(vv.size),
+        "vr_mean": float(np.mean(vv)),
+        "vr_median": float(np.median(vv)),
+        "vr_std": float(np.std(vv)),
+    }
+
+
 def build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg, gt_list=None):
     """
     显式构建当前帧每个 cluster 的中心。
@@ -301,6 +337,8 @@ def build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg, gt_l
         cpts = pts[mask]
         if cpts.size == 0:
             continue
+
+        vel_stats = _build_cluster_velocity_stats(frame_item, mask)
 
         if mode == "fixed_box":
             model_id = None
@@ -325,6 +363,10 @@ def build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg, gt_l
                 "outside_mean": float(fit_result["outside_mean"]),
                 "bottom_y": np.nan,
                 "raw_bottom_center_y": np.nan,
+                "num_points": int(vel_stats["num_points"]),
+                "vr_mean": float(vel_stats["vr_mean"]),
+                "vr_median": float(vel_stats["vr_median"]),
+                "vr_std": float(vel_stats["vr_std"]),
             }
 
         elif mode == "bottom_half_length":
@@ -350,6 +392,10 @@ def build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg, gt_l
                 "outside_mean": np.nan,
                 "bottom_y": float(fit_result["bottom_y"]),
                 "raw_bottom_center_y": float(center[1]),
+                "num_points": int(vel_stats["num_points"]),
+                "vr_mean": float(vel_stats["vr_mean"]),
+                "vr_median": float(vel_stats["vr_median"]),
+                "vr_std": float(vel_stats["vr_std"]),
             }
 
         else:
@@ -370,6 +416,10 @@ def build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg, gt_l
                 "outside_mean": np.nan,
                 "bottom_y": np.nan,
                 "raw_bottom_center_y": np.nan,
+                "num_points": int(vel_stats["num_points"]),
+                "vr_mean": float(vel_stats["vr_mean"]),
+                "vr_median": float(vel_stats["vr_median"]),
+                "vr_std": float(vel_stats["vr_std"]),
             }
 
         center = bias_fn(center, cfg)
@@ -690,6 +740,7 @@ def process_one_frame(fid, radar_data, gt_df, fit_mode, cfg, center_fn, bias_fn,
     if tracker is not None:
         cluster_centers_filtered, track_assignments, raw_centers_for_export = temporal_filter_cluster_centers_online(
             cluster_centers=cluster_centers_raw,
+            cluster_meta=cluster_meta_raw,
             tracker=tracker,
         )
 
@@ -744,6 +795,9 @@ def process_one_frame(fid, radar_data, gt_df, fit_mode, cfg, center_fn, bias_fn,
     }
 
 
-def temporal_filter_cluster_centers_online(cluster_centers, tracker):
-    filtered_centers, track_assignments, raw_centers = tracker.step(cluster_centers)
+def temporal_filter_cluster_centers_online(cluster_centers, cluster_meta, tracker):
+    filtered_centers, track_assignments, raw_centers = tracker.step(
+        cluster_centers=cluster_centers,
+        cluster_meta=cluster_meta,
+    )
     return filtered_centers, track_assignments, raw_centers

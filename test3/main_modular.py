@@ -53,8 +53,15 @@ def build_tracker(cfg):
         assoc_metric=getattr(cfg, "TRACK_ASSOC_METRIC", "euclidean"),
         assoc_dist_thr=cfg.TRACK_ASSOC_DIST_THR,
         assoc_mahal_thr=getattr(cfg, "TRACK_ASSOC_MAHAL_THR", 3.5),
+
+        # velocity-aware association
+        use_vel_assoc=getattr(cfg, "TRACK_USE_VEL_ASSOC", True),
+        assoc_vel_thr=getattr(cfg, "TRACK_ASSOC_VEL_THR", 2.0),
+        assoc_w_pos=getattr(cfg, "TRACK_ASSOC_W_POS", 1.0),
+        assoc_w_vel=getattr(cfg, "TRACK_ASSOC_W_VEL", 0.8),
+        track_vel_ema_alpha=getattr(cfg, "TRACK_VEL_EMA_ALPHA", 0.6),
+
         max_misses=cfg.TRACK_MAX_MISSES,
-        # 轨迹确认参数
         min_hits_to_confirm=getattr(cfg, "TRACK_MIN_HITS_TO_CONFIRM", 2),
         max_tentative_misses=getattr(cfg, "TRACK_MAX_TENTATIVE_MISSES", 1),
         dt=cfg.KF_DT,

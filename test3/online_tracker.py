@@ -23,6 +23,7 @@ class BaseKalmanTrack(object):
         max_r_scale=4.0,
         enable_output_ema=False,
         output_ema_alpha=0.65,
+        track_vel_ema_alpha=0.6,
     ):
         self.track_id = int(track_id)
         self.dt = float(dt)
@@ -39,6 +40,8 @@ class BaseKalmanTrack(object):
         self.filtered_center = self.raw_center.copy()
         self.output_center = self.raw_center.copy()
 
+        self.radial_speed = np.nan
+
         self.base_r_pos = float(r_pos)
         self.use_adaptive_r = bool(use_adaptive_r)
         self.adaptive_r_gain = float(adaptive_r_gain)
@@ -47,6 +50,7 @@ class BaseKalmanTrack(object):
 
         self.enable_output_ema = bool(enable_output_ema)
         self.output_ema_alpha = float(output_ema_alpha)
+        self.track_vel_ema_alpha = float(track_vel_ema_alpha)
 
         self._init_pos_var = float(init_pos_var)
         self._init_vel_var = float(init_vel_var)
@@ -131,7 +135,23 @@ class BaseKalmanTrack(object):
         scale = min(max(scale, self.min_r_scale), self.max_r_scale)
         self.R = np.eye(2, dtype=float) * (self.base_r_pos * scale)
 
-    def update(self, measurement):
+    def update_cluster_velocity(self, cluster_vr):
+        if cluster_vr is None:
+            return
+        try:
+            v = float(cluster_vr)
+        except Exception:
+            return
+        if not np.isfinite(v):
+            return
+
+        if not np.isfinite(self.radial_speed):
+            self.radial_speed = v
+        else:
+            a = self.track_vel_ema_alpha
+            self.radial_speed = a * v + (1.0 - a) * self.radial_speed
+
+    def update(self, measurement, cluster_meta=None):
         z = np.asarray(measurement, dtype=float).reshape(2)
 
         y = z - self.H.dot(self.state)
@@ -152,6 +172,9 @@ class BaseKalmanTrack(object):
 
         self.filtered_center = self.state[:2].copy()
         self.output_center = self._apply_output_smoother(self.filtered_center)
+
+        if cluster_meta is not None:
+            self.update_cluster_velocity(cluster_meta.get("vr_median", np.nan))
 
         self.raw_center = z.copy()
         self.on_update_success()
@@ -248,6 +271,11 @@ class OnlineTrackerManager(object):
         assoc_metric="euclidean",
         assoc_dist_thr=8.0,
         assoc_mahal_thr=3.5,
+        use_vel_assoc=True,
+        assoc_vel_thr=2.0,
+        assoc_w_pos=1.0,
+        assoc_w_vel=0.8,
+        track_vel_ema_alpha=0.6,
         max_misses=5,
         min_hits_to_confirm=2,
         max_tentative_misses=1,
@@ -270,6 +298,13 @@ class OnlineTrackerManager(object):
         self.assoc_metric = str(assoc_metric).lower()
         self.assoc_dist_thr = float(assoc_dist_thr)
         self.assoc_mahal_thr = float(assoc_mahal_thr)
+
+        self.use_vel_assoc = bool(use_vel_assoc)
+        self.assoc_vel_thr = float(assoc_vel_thr)
+        self.assoc_w_pos = float(assoc_w_pos)
+        self.assoc_w_vel = float(assoc_w_vel)
+        self.track_vel_ema_alpha = float(track_vel_ema_alpha)
+
         self.max_misses = int(max_misses)
         self.min_hits_to_confirm = int(min_hits_to_confirm)
         self.max_tentative_misses = int(max_tentative_misses)
@@ -307,6 +342,7 @@ class OnlineTrackerManager(object):
             max_r_scale=self.max_r_scale,
             enable_output_ema=self.enable_output_ema,
             output_ema_alpha=self.output_ema_alpha,
+            track_vel_ema_alpha=self.track_vel_ema_alpha,
         )
 
         if self.method == "ca":
@@ -338,10 +374,30 @@ class OnlineTrackerManager(object):
             return track.mahalanobis_distance(center)
         return track.euclidean_distance(center)
 
+    def _velocity_distance(self, track, meta):
+        if (not self.use_vel_assoc) or meta is None:
+            return 0.0
+
+        cluster_vr = meta.get("vr_median", np.nan)
+        try:
+            cluster_vr = float(cluster_vr)
+        except Exception:
+            return 0.0
+
+        if (not np.isfinite(cluster_vr)) or (not np.isfinite(track.radial_speed)):
+            return 0.0
+
+        return float(abs(cluster_vr - track.radial_speed))
+
     def _gate_threshold(self):
         if self.assoc_metric == "mahalanobis":
             return self.assoc_mahal_thr
         return self.assoc_dist_thr
+
+    def _association_cost(self, track, center, meta):
+        c_pos = self._distance(track, center)
+        c_vel = self._velocity_distance(track, meta)
+        return self.assoc_w_pos * c_pos + self.assoc_w_vel * c_vel
 
     def _maybe_confirm_track(self, track):
         if (not track.is_confirmed) and track.hit_streak >= self.min_hits_to_confirm:
@@ -355,7 +411,10 @@ class OnlineTrackerManager(object):
             return track.miss_count > self.max_tentative_misses
         return track.miss_count > self.max_misses
 
-    def _build_cost_matrix(self, cluster_centers):
+    def _build_cost_matrix(self, cluster_centers, cluster_meta=None):
+        if cluster_meta is None:
+            cluster_meta = {}
+
         track_ids = list(self.tracks.keys())
         cluster_ids = list(cluster_centers.keys())
         cost = np.zeros((len(track_ids), len(cluster_ids)), dtype=float)
@@ -367,7 +426,21 @@ class OnlineTrackerManager(object):
             track = self.tracks[tid]
             for j, cid in enumerate(cluster_ids):
                 center = cluster_centers[cid]
-                cost[i, j] = self._distance(track, center)
+                meta = cluster_meta.get(cid, {})
+
+                vel_dist = self._velocity_distance(track, meta)
+                meta_vr = meta.get("vr_median", np.nan)
+                try:
+                    meta_vr = float(meta_vr)
+                except Exception:
+                    meta_vr = np.nan
+
+                if self.use_vel_assoc and np.isfinite(track.radial_speed):
+                    if np.isfinite(meta_vr) and vel_dist > self.assoc_vel_thr:
+                        cost[i, j] = BIG_COST
+                        continue
+
+                cost[i, j] = self._association_cost(track, center, meta)
 
         return cost, track_ids, cluster_ids
 
@@ -388,14 +461,17 @@ class OnlineTrackerManager(object):
                 "filtered_y": float(track.filtered_center[1]),
                 "output_x": float(track.output_center[0]),
                 "output_y": float(track.output_center[1]),
+                "radial_speed": float(track.radial_speed) if np.isfinite(track.radial_speed) else np.nan,
             }
         return out
 
-    def step(self, cluster_centers):
+    def step(self, cluster_centers, cluster_meta=None):
         cluster_centers = {
             int(cid): np.asarray(center, dtype=float).reshape(2)
             for cid, center in cluster_centers.items()
         }
+        if cluster_meta is None:
+            cluster_meta = {}
 
         filtered_centers = {}
         track_assignments = {}
@@ -415,11 +491,16 @@ class OnlineTrackerManager(object):
             return filtered_centers, track_assignments, raw_centers
 
         if len(self.tracks) == 0:
-            for _, center in cluster_centers.items():
-                self._new_track(center)
+            for cid, center in cluster_centers.items():
+                tid = self._new_track(center)
+                meta = cluster_meta.get(cid, {})
+                self.tracks[tid].update_cluster_velocity(meta.get("vr_median", np.nan))
             return filtered_centers, track_assignments, raw_centers
 
-        cost, track_ids, cluster_ids = self._build_cost_matrix(cluster_centers)
+        cost, track_ids, cluster_ids = self._build_cost_matrix(
+            cluster_centers=cluster_centers,
+            cluster_meta=cluster_meta,
+        )
         gate_thr = self._gate_threshold()
 
         gated_cost = cost.copy()
@@ -437,7 +518,10 @@ class OnlineTrackerManager(object):
             cid = cluster_ids[c]
             track = self.tracks[tid]
 
-            filtered = track.update(cluster_centers[cid])
+            filtered = track.update(
+                cluster_centers[cid],
+                cluster_meta=cluster_meta.get(cid, {}),
+            )
             self._maybe_confirm_track(track)
 
             if self._should_output_track(track):
@@ -452,7 +536,9 @@ class OnlineTrackerManager(object):
             if cid in matched_clusters:
                 continue
             center = cluster_centers[cid]
-            self._new_track(center)
+            tid = self._new_track(center)
+            meta = cluster_meta.get(cid, {})
+            self.tracks[tid].update_cluster_velocity(meta.get("vr_median", np.nan))
 
         to_delete = []
         for tid, track in self.tracks.items():
