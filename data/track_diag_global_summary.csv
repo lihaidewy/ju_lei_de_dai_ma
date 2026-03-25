@@ -1,0 +1,2 @@
+﻿num_tracks,num_single_frame_tracks,num_short_tracks_le_2,mean_track_life,median_track_life,mean_raw_jump,mean_filtered_jump,mean_smoothing_gain,mean_err_raw,mean_err_filtered,num_tracks_with_gt_switch,num_gt_with_multi_track_ids
+126,2,4,55.41269841269841,50.0,1.8665575022045209,1.7272475409625396,0.1393099612419813,1.0425529229395116,0.9570616583106027,21,58

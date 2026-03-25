@@ -10,6 +10,7 @@ from exporters import export_point_table, export_tp_matches, export_tp_matches_e
 from online_tracker import OnlineTrackerManager
 from stats_utils import init_stats, print_global_summary, update_range_bias_stats, update_stats
 from viz_utils import render_frame
+from trajectory_diagnostics import collect_track_records,build_track_summary,build_track_diagnostic_summary,print_track_diagnostic_summary,export_track_diagnostics
 
 
 CENTER_MODE_CHOICES = [
@@ -53,6 +54,9 @@ def build_tracker(cfg):
         assoc_dist_thr=cfg.TRACK_ASSOC_DIST_THR,
         assoc_mahal_thr=getattr(cfg, "TRACK_ASSOC_MAHAL_THR", 3.5),
         max_misses=cfg.TRACK_MAX_MISSES,
+        # 轨迹确认参数
+        min_hits_to_confirm=getattr(cfg, "TRACK_MIN_HITS_TO_CONFIRM", 2),
+        max_tentative_misses=getattr(cfg, "TRACK_MAX_TENTATIVE_MISSES", 1),
         dt=cfg.KF_DT,
         q_pos=cfg.KF_Q_POS,
         q_vel=cfg.KF_Q_VEL,
@@ -225,7 +229,22 @@ def main():
     )
 
     export_results(cfg, point_tables, tp_match_rows)
+    if getattr(cfg, "ENABLE_TRACK_DIAGNOSTICS", False):
+        track_frame_df = collect_track_records(cache, frame_ids)
+        track_summary_df = build_track_summary(track_frame_df)
+        track_diag_summary = build_track_diagnostic_summary(track_frame_df, track_summary_df)
 
+        print_track_diagnostic_summary(track_diag_summary)
+
+        export_track_diagnostics(
+            track_frame_df=track_frame_df,
+            track_summary_df=track_summary_df,
+            summary=track_diag_summary,
+            frame_csv_path=cfg.TRACK_DIAG_FRAME_CSV_PATH,
+            track_csv_path=cfg.TRACK_DIAG_SUMMARY_CSV_PATH,
+            summary_csv_path=cfg.TRACK_DIAG_GLOBAL_CSV_PATH,
+        )
+        
     if cfg.VIEWER_ENABLE:
         if str(getattr(cfg, "VIEWER_MODE", "static")).lower() == "animated":
             launch_animated_viewer(cache, frame_ids, cfg, fit_mode=args.fit_mode)

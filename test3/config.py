@@ -95,7 +95,14 @@ class Config:
     TRACK_ASSOC_MAHAL_THR: float = 3.5
 
     TRACK_MAX_MISSES: int = 20
-
+    # ------------------------------------------------------------
+    # Track confirmation:
+    # - 新轨迹先 tentative
+    # - 连续命中达到阈值后才 confirmed
+    # - tentative 轨迹允许更快删除
+    # ------------------------------------------------------------
+    TRACK_MIN_HITS_TO_CONFIRM: int = 3
+    TRACK_MAX_TENTATIVE_MISSES: int = 2
     # Motion model
     KF_DT: float = 1.0
 
@@ -125,7 +132,7 @@ class Config:
     # Viewer / Animation
     # ------------------------------------------------------------------
     VIEWER_ENABLE: bool = True
-    VIEWER_MODE: str = "static"   # "static" / "animated"
+    VIEWER_MODE: str = "animated"   # "static" / "animated"
 
     # animation behavior
     ANIM_AUTOPLAY: bool = True
@@ -168,3 +175,11 @@ class Config:
     # True: 导出所有 frame_ids
     # False: 只导出当前 viewer 中的序列
     EXPORT_ANIMATION_ALL_FRAMES: bool = True
+
+    # ------------------------------------------------------------------
+    # Trajectory diagnostics
+    # ------------------------------------------------------------------
+    ENABLE_TRACK_DIAGNOSTICS: bool = True
+    TRACK_DIAG_FRAME_CSV_PATH: str = "data/track_frame_records.csv"
+    TRACK_DIAG_SUMMARY_CSV_PATH: str = "data/track_summary.csv"
+    TRACK_DIAG_GLOBAL_CSV_PATH: str = "data/track_diag_global_summary.csv"

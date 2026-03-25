@@ -29,7 +29,11 @@ class BaseKalmanTrack(object):
 
         self.age = 1
         self.hit_count = 1
+        self.hit_streak = 1
         self.miss_count = 0
+
+        self.is_confirmed = False
+        self.is_tentative = True
 
         self.raw_center = np.asarray(center, dtype=float).reshape(2)
         self.filtered_center = self.raw_center.copy()
@@ -66,6 +70,21 @@ class BaseKalmanTrack(object):
     @property
     def velocity(self):
         return self.state[2:4].copy()
+
+    def confirm(self):
+        self.is_confirmed = True
+        self.is_tentative = False
+
+    def on_update_success(self):
+        self.hit_count += 1
+        self.hit_streak += 1
+        self.miss_count = 0
+        self.age += 1
+
+    def on_missed(self):
+        self.miss_count += 1
+        self.hit_streak = 0
+        self.age += 1
 
     def predict(self):
         self.state = self.F.dot(self.state)
@@ -135,14 +154,11 @@ class BaseKalmanTrack(object):
         self.output_center = self._apply_output_smoother(self.filtered_center)
 
         self.raw_center = z.copy()
-        self.hit_count += 1
-        self.miss_count = 0
-        self.age += 1
+        self.on_update_success()
         return self.output_center.copy()
 
     def mark_missed(self):
-        self.miss_count += 1
-        self.age += 1
+        self.on_missed()
 
 
 class KalmanTrackCV(BaseKalmanTrack):
@@ -233,6 +249,8 @@ class OnlineTrackerManager(object):
         assoc_dist_thr=8.0,
         assoc_mahal_thr=3.5,
         max_misses=5,
+        min_hits_to_confirm=2,
+        max_tentative_misses=1,
         dt=1.0,
         q_pos=0.30,
         q_vel=0.50,
@@ -253,6 +271,8 @@ class OnlineTrackerManager(object):
         self.assoc_dist_thr = float(assoc_dist_thr)
         self.assoc_mahal_thr = float(assoc_mahal_thr)
         self.max_misses = int(max_misses)
+        self.min_hits_to_confirm = int(min_hits_to_confirm)
+        self.max_tentative_misses = int(max_tentative_misses)
 
         self.dt = float(dt)
         self.q_pos = float(q_pos)
@@ -323,6 +343,18 @@ class OnlineTrackerManager(object):
             return self.assoc_mahal_thr
         return self.assoc_dist_thr
 
+    def _maybe_confirm_track(self, track):
+        if (not track.is_confirmed) and track.hit_streak >= self.min_hits_to_confirm:
+            track.confirm()
+
+    def _should_output_track(self, track):
+        return bool(track.is_confirmed)
+
+    def _should_delete_track(self, track):
+        if track.is_tentative:
+            return track.miss_count > self.max_tentative_misses
+        return track.miss_count > self.max_misses
+
     def _build_cost_matrix(self, cluster_centers):
         track_ids = list(self.tracks.keys())
         cluster_ids = list(cluster_centers.keys())
@@ -339,6 +371,26 @@ class OnlineTrackerManager(object):
 
         return cost, track_ids, cluster_ids
 
+    def get_active_track_states(self):
+        out = {}
+        for tid, track in self.tracks.items():
+            out[int(tid)] = {
+                "track_id": int(tid),
+                "age": int(getattr(track, "age", 0)),
+                "hit_count": int(getattr(track, "hit_count", 0)),
+                "hit_streak": int(getattr(track, "hit_streak", 0)),
+                "miss_count": int(getattr(track, "miss_count", 0)),
+                "is_confirmed": bool(getattr(track, "is_confirmed", False)),
+                "is_tentative": bool(getattr(track, "is_tentative", True)),
+                "raw_x": float(track.raw_center[0]),
+                "raw_y": float(track.raw_center[1]),
+                "filtered_x": float(track.filtered_center[0]),
+                "filtered_y": float(track.filtered_center[1]),
+                "output_x": float(track.output_center[0]),
+                "output_y": float(track.output_center[1]),
+            }
+        return out
+
     def step(self, cluster_centers):
         cluster_centers = {
             int(cid): np.asarray(center, dtype=float).reshape(2)
@@ -354,18 +406,17 @@ class OnlineTrackerManager(object):
             for tid, track in self.tracks.items():
                 track.predict()
                 track.mark_missed()
-                if track.miss_count > self.max_misses:
+                if self._should_delete_track(track):
                     to_delete.append(tid)
+
             for tid in to_delete:
                 del self.tracks[tid]
+
             return filtered_centers, track_assignments, raw_centers
 
         if len(self.tracks) == 0:
-            for cid, center in cluster_centers.items():
-                tid = self._new_track(center)
-                filtered_centers[cid] = center.copy()
-                track_assignments[cid] = tid
-                raw_centers[cid] = center.copy()
+            for _, center in cluster_centers.items():
+                self._new_track(center)
             return filtered_centers, track_assignments, raw_centers
 
         cost, track_ids, cluster_ids = self._build_cost_matrix(cluster_centers)
@@ -385,11 +436,15 @@ class OnlineTrackerManager(object):
             tid = track_ids[r]
             cid = cluster_ids[c]
             track = self.tracks[tid]
-            filtered = track.update(cluster_centers[cid])
 
-            filtered_centers[cid] = filtered.copy()
-            track_assignments[cid] = tid
-            raw_centers[cid] = cluster_centers[cid].copy()
+            filtered = track.update(cluster_centers[cid])
+            self._maybe_confirm_track(track)
+
+            if self._should_output_track(track):
+                filtered_centers[cid] = filtered.copy()
+                track_assignments[cid] = tid
+                raw_centers[cid] = cluster_centers[cid].copy()
+
             matched_tracks.add(tid)
             matched_clusters.add(cid)
 
@@ -397,18 +452,14 @@ class OnlineTrackerManager(object):
             if cid in matched_clusters:
                 continue
             center = cluster_centers[cid]
-            tid = self._new_track(center)
-            filtered_centers[cid] = center.copy()
-            track_assignments[cid] = tid
-            raw_centers[cid] = center.copy()
-            matched_tracks.add(tid)
+            self._new_track(center)
 
         to_delete = []
         for tid, track in self.tracks.items():
             if tid in matched_tracks:
                 continue
             track.mark_missed()
-            if track.miss_count > self.max_misses:
+            if self._should_delete_track(track):
                 to_delete.append(tid)
 
         for tid in to_delete:
