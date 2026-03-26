@@ -68,8 +68,55 @@ def build_gt_maps(gt_list):
     return gt_map, gt_model_map, gt_pos_map
 
 
+def _count_points_per_label(labels):
+    labels = np.asarray(labels)
+    out = {}
+    for cid in np.unique(labels):
+        out[int(cid)] = int(np.sum(labels == cid))
+    return out
+
+
+def relabel_noise_as_singletons(labels, cfg=None):
+    """
+    将 DBSCAN 的噪声点(label==-1)改成独立目标：
+    每个噪声点分配一个新的唯一 cluster id。
+
+    注意：
+    不能直接把 -1 当成一个目标，
+    否则整帧所有噪声点会被当成同一个 cluster。
+    """
+    labels = np.asarray(labels).copy()
+
+    noise_idx = np.where(labels == -1)[0]
+    if noise_idx.size == 0:
+        return labels
+
+    only_single_point_noise = True
+    if cfg is not None:
+        only_single_point_noise = bool(
+            getattr(cfg, "ONLY_PROMOTE_SINGLE_POINT_NOISE", True)
+        )
+
+    label_counts = _count_points_per_label(labels)
+
+    valid_ids = labels[labels >= 1]
+    next_id = int(valid_ids.max()) + 1 if valid_ids.size > 0 else 1
+
+    for idx in noise_idx:
+        # 当前 DBSCAN 的 label==-1 实际就是单点噪声。
+        # 这里保留 only_single_point_noise 开关，给以后扩展用。
+        if only_single_point_noise:
+            labels[idx] = next_id
+            next_id += 1
+        else:
+            labels[idx] = next_id
+            next_id += 1
+
+    return labels
+
+
 def cluster_one_frame(radar_data, fid, cfg):
-    return cluster_frame_dbscan(
+    labels = cluster_frame_dbscan(
         radar_data,
         fid,
         eps_x=cfg.EPS_X,
@@ -78,8 +125,18 @@ def cluster_one_frame(radar_data, fid, cfg):
         min_pts=cfg.MIN_PTS,
     )
 
+    if bool(getattr(cfg, "TREAT_NOISE_AS_SINGLETON_TARGETS", False)):
+        labels = relabel_noise_as_singletons(labels, cfg)
+
+    return labels
+
 
 def iter_valid_cluster_ids(labels):
+    """
+    经过 cluster_one_frame() 后，
+    这里只处理 >=1 的有效目标 id。
+    若启用了 singleton 提升，原始噪声点也已经变成新的正整数 id。
+    """
     for cid in np.unique(labels):
         if int(cid) >= 1:
             yield int(cid)
@@ -349,7 +406,6 @@ def build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg, gt_l
             if (not prior_candidates) and bool(getattr(cfg, "FIXED_BOX_FALLBACK_TO_ALL_PRIORS", True)):
                 prior_candidates = _get_prior_candidates(cfg, model_id=None)
 
-            # 修正：fixed_box 必须调用 fixed_box 版本
             fit_result = _fit_center_fixed_box_with_priors(cpts, prior_candidates, cfg)
             center = fit_result["center"]
 
@@ -378,7 +434,6 @@ def build_cluster_centers(labels, pts, frame_item, center_fn, bias_fn, cfg, gt_l
             if (not prior_candidates) and bool(getattr(cfg, "FIXED_BOX_FALLBACK_TO_ALL_PRIORS", True)):
                 prior_candidates = _get_prior_candidates(cfg, model_id=None)
 
-            # 修正：bottom_half_length 必须把 cfg 传进去
             fit_result = _fit_center_bottom_half_length_with_priors(cpts, prior_candidates, cfg)
             center = fit_result["center"]
 

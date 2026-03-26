@@ -92,25 +92,30 @@ def compute_center_velocity_filtered_trimmed_mean(cpts: np.ndarray, v_local: np.
     return compute_center_trimmed_mean(cpts, trim_ratio=cfg.TRIMMED_MEAN_RATIO)
 
 
-def get_center_function(mode: str):
-    mode = (mode or "mean").lower().strip()
+def get_center_function(mode):
+    mode = str(mode).strip().lower()
 
     if mode == "mean":
         return compute_center_mean
-    if mode == "median":
+    elif mode == "median":
         return compute_center_median
-    if mode == "snr_mean":
-        return compute_center_snr_mean
-    if mode == "trimmed_mean":
-        return compute_center_trimmed_mean
-    if mode == "mean_x_median_y":
-        return compute_center_mean_x_median_y
-
-    if mode in ("velocity_mean", "velocity_trimmed_mean", "fixed_box", "bottom_half_length"):
-        # 这些模式的实际逻辑放在 data_pipeline / compute_center_with_optional_velocity_filter 中
+    elif mode == "snr_mean":
         return compute_center_mean
+    elif mode == "trimmed_mean":
+        return compute_center_mean
+    elif mode == "mean_x_median_y":
+        return compute_center_mean_x_median_y
+    elif mode == "velocity_mean":
+        return compute_center_mean
+    elif mode == "velocity_trimmed_mean":
+        return compute_center_mean
+    elif mode == "fixed_box":
+        return compute_center_mean
+    elif mode == "bottom_half_length":
+        return compute_center_mean
+    else:
+        raise ValueError("Unsupported center mode: %s" % mode)
 
-    raise ValueError("Unsupported center mode: %s" % mode)
 
 
 def compute_center_with_optional_velocity_filter(cpts: np.ndarray, frame_item, mask, center_fn, cfg):

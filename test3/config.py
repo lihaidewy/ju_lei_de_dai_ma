@@ -11,13 +11,12 @@ _GT_DIM = {
 
 @dataclass
 class Config:
-    # RADAR_PATH: str = "data\\radar.csv"
-    # GT_PATH: str = "data\\reference3.csv"
+    RADAR_PATH: str = "data\\radar.csv"
+    GT_PATH: str = "data\\reference3.csv"
     # RADAR_PATH: str = "data\S1m_point\S1m.csv"
     # GT_PATH: str = "data\S1m_point\\reference.csv"
-    RADAR_PATH: str = "data\S1s_point\S1s.csv"
-    GT_PATH: str = "data\S1s_point\\references.csv"
-
+    # RADAR_PATH: str = "data\S1s_point\S1s.csv"
+    # GT_PATH: str = "data\S1s_point\\references.csv"
 
     EPS_X: float = 1.5
     EPS_Y: float = 4.0
@@ -29,6 +28,20 @@ class Config:
 
     MAX_FRAMES_TO_VIEW: int = 1200
     FRAMES_TO_SHOW: Optional[List[int]] = None
+
+    # ------------------------------------------------------------
+    # 噪声点处理策略
+    # ------------------------------------------------------------
+    # True:
+    #   DBSCAN 输出的 label==-1 不再视为噪声丢弃，
+    #   而是把每个噪声点重标成一个独立目标(singleton cluster)。
+    # False:
+    #   保持原逻辑，label==-1 直接忽略。
+    TREAT_NOISE_AS_SINGLETON_TARGETS: bool = True
+
+    # 如果你只想把“单点噪声”当目标，而不是任意噪声簇当目标，
+    # 这里保持 True 即可。当前 DBSCAN 的噪声通常就是单点。
+    ONLY_PROMOTE_SINGLE_POINT_NOISE: bool = True
 
     # ------------------------------------------------------------
     # 当前先使用 3 个 GT/车型先验。
@@ -120,6 +133,7 @@ class Config:
     # ------------------------------------------------------------
     TRACK_MIN_HITS_TO_CONFIRM: int = 2
     TRACK_MAX_TENTATIVE_MISSES: int = 1
+
     # Motion model
     KF_DT: float = 1.0
 
