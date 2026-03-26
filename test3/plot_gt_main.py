@@ -14,17 +14,11 @@ def load_gt_reference(reference_path, H=6.0):
         Y : 前向
     """
 
-    gt = pd.read_csv(reference_path)
+    # 跳过第一行，并手动指定列名
+    gt = pd.read_csv(reference_path, skiprows=1, header=None)
+    gt.columns = ["Frame", "ID","V", "R", "A","YAW"]
 
-    # 兼容中文列名
-    gt = gt.rename(columns={
-        "帧号": "Frame",
-        "车辆ID": "ID",
-        "距离(m)": "R",
-        "角度(deg)": "A",
-    })
-
-    for c in ["Frame", "ID", "R", "A"]:
+    for c in ["Frame", "ID","V", "R", "A","YAW"]:
         gt[c] = pd.to_numeric(gt[c], errors="coerce")
 
     gt = gt.dropna(subset=["Frame", "ID", "R", "A"])
