@@ -6,7 +6,7 @@ RAW = ["Frame", "V", "R", "A", "SNR"]
 COLS = RAW + ["X", "Y"]
 
 
-def load_data(path, H=6.0, A_is_degree=True, save_csv=True, out_path=None):
+def load_data(path, H=7.0, A_is_degree=True, save_csv=True, out_path=None):
     path = Path(path)
 
     df = (

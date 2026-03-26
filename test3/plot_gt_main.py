@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-def load_gt_reference(reference_path, H=6.0):
+def load_gt_reference(reference_path, H=7.0):
     """
     reference.csv: 含 Frame/ID/R/A（或中文列名）
 

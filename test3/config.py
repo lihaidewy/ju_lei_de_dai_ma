@@ -13,8 +13,11 @@ _GT_DIM = {
 class Config:
     # RADAR_PATH: str = "data\\radar.csv"
     # GT_PATH: str = "data\\reference3.csv"
-    RADAR_PATH: str = "data\S1m_point\S1m.csv"
-    GT_PATH: str = "data\S1m_point\\reference.csv"
+    # RADAR_PATH: str = "data\S1m_point\S1m.csv"
+    # GT_PATH: str = "data\S1m_point\\reference.csv"
+    RADAR_PATH: str = "data\S1s_point\S1s.csv"
+    GT_PATH: str = "data\S1s_point\\references.csv"
+
 
     EPS_X: float = 1.5
     EPS_Y: float = 4.0
@@ -77,10 +80,10 @@ class Config:
     BOTTOM_ROBUST_K: int = 1
     BOTTOM_ROBUST_MIN_MODE: str = "median"   # "median" 或 "mean"
 
-    EXPORT_CSV_PATH: str = "data/radar_points_with_labels.csv"
-    EXPORT_XLSX_PATH: str = "data/radar_points_with_labels.xlsx"
-    TP_MATCH_CSV_PATH: str = "data/tp_matches_for_bias.csv"
-    TP_MATCH_XLSX_PATH: str = "data/tp_matches_for_bias.xlsx"
+    EXPORT_CSV_PATH: str = "data/S1m_point_with_labels.csv"
+    EXPORT_XLSX_PATH: str = "data/S1m_point_with_labels.xlsx"
+    TP_MATCH_CSV_PATH: str = "data/S1m_point_for_bias.csv"
+    TP_MATCH_XLSX_PATH: str = "data/S1m_point_for_bias.xlsx"
 
     USE_ONLINE_TRACKER: bool = True
     # ------------------------------------------------------------------
@@ -115,8 +118,8 @@ class Config:
     # - 连续命中达到阈值后才 confirmed
     # - tentative 轨迹允许更快删除
     # ------------------------------------------------------------
-    TRACK_MIN_HITS_TO_CONFIRM: int = 3
-    TRACK_MAX_TENTATIVE_MISSES: int = 2
+    TRACK_MIN_HITS_TO_CONFIRM: int = 2
+    TRACK_MAX_TENTATIVE_MISSES: int = 1
     # Motion model
     KF_DT: float = 1.0
 
@@ -130,7 +133,7 @@ class Config:
     KF_INIT_POS_VAR: float = 4.0
     KF_INIT_VEL_VAR: float = 9.0
     KF_INIT_ACC_VAR: float = 16.0
-    KF_USE_ADAPTIVE_R: bool = True
+    KF_USE_ADAPTIVE_R: bool = False
     KF_ADAPTIVE_R_GAIN: float = 0.25
     KF_MIN_R_SCALE: float = 0.75
     KF_MAX_R_SCALE: float = 4.0

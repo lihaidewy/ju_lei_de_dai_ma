@@ -20,7 +20,7 @@ except Exception:
 
 
 def load_all_data(cfg):
-    gt_df = load_gt_reference(cfg.GT_PATH, H=6.0)
+    gt_df = load_gt_reference(cfg.GT_PATH, H=7.0)
     radar_data = load_data(cfg.RADAR_PATH)
     return radar_data, gt_df
 
