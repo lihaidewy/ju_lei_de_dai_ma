@@ -39,6 +39,13 @@ class BaseKalmanTrack(object):
         self.raw_center = np.asarray(center, dtype=float).reshape(2)
         self.filtered_center = self.raw_center.copy()
         self.output_center = self.raw_center.copy()
+        # ------------------------------------------------------------
+        # 初始化辅助状态：
+        # - prev_measurement: 上一次量测位置
+        # - velocity_initialized: 是否已经用两帧差分初始化过速度
+        # ------------------------------------------------------------
+        self.prev_measurement = self.raw_center.copy()
+        self.velocity_initialized = False
 
         self.radial_speed = np.nan
 
@@ -212,8 +219,61 @@ class KalmanTrackCV(BaseKalmanTrack):
             [0.0, 1.0, 0.0, 0.0],
         ], dtype=float)
 
-        self.Q = np.diag([self.q_pos, self.q_pos, self.q_vel, self.q_vel]).astype(float)
+        self.Q = np.diag([
+            self.q_pos,
+            self.q_pos,
+            self.q_vel,
+            self.q_vel,
+        ]).astype(float)
+
         self.R = np.eye(2, dtype=float) * float(self.base_r_pos)
+
+    def update(self, measurement, cluster_meta=None):
+        z = np.asarray(measurement, dtype=float).reshape(2)
+
+        # ------------------------------------------------------------
+        # 两帧位置差初始化速度
+        # 仅在第一次成功更新时执行一次
+        # ------------------------------------------------------------
+        if not getattr(self, "velocity_initialized", False):
+            dz = z - self.prev_measurement
+            dt_safe = max(float(self.dt), 1e-6)
+
+            vx0 = float(dz[0] / dt_safe)
+            vy0 = float(dz[1] / dt_safe)
+
+            self.state[2] = vx0
+            self.state[3] = vy0
+            self.velocity_initialized = True
+
+        y = z - self.H.dot(self.state)
+        self._maybe_adapt_R(y)
+
+        s = self.H.dot(self.P).dot(self.H.T) + self.R
+        pht = self.P.dot(self.H.T)
+        try:
+            k = np.linalg.solve(s, pht.T).T
+        except np.linalg.LinAlgError:
+            k = pht.dot(np.linalg.pinv(s))
+
+        self.state = self.state + k.dot(y)
+
+        i = np.eye(self.P.shape[0], dtype=float)
+        kh = k.dot(self.H)
+        self.P = (i - kh).dot(self.P).dot((i - kh).T) + k.dot(self.R).dot(k.T)
+
+        self.filtered_center = self.state[:2].copy()
+        self.output_center = self._apply_output_smoother(self.filtered_center)
+
+        if cluster_meta is not None:
+            self.update_cluster_velocity(cluster_meta.get("vr_median", np.nan))
+
+        self.raw_center = z.copy()
+        self.prev_measurement = z.copy()
+
+        self.on_update_success()
+        return self.output_center.copy()
+
 
 
 class KalmanTrackCA(BaseKalmanTrack):

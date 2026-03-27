@@ -107,6 +107,9 @@ class Config:
     # ------------------------------------------------------------------
     TRACKER_METHOD: str = "cv"
 
+    # 绝对匀速策略开关
+    TRACK_STRICT_CONSTANT_VELOCITY: bool = True
+
     # Association
     TRACK_ASSOC_METRIC: str = "euclidean"   # euclidean / mahalanobis
     TRACK_ASSOC_DIST_THR: float = 6.0
@@ -118,10 +121,10 @@ class Config:
     # - track side keeps a radial-speed EMA
     # - apply velocity gate first, then add soft velocity cost
     # ------------------------------------------------------------
-    TRACK_USE_VEL_ASSOC: bool = True
+    TRACK_USE_VEL_ASSOC: bool = False
     TRACK_ASSOC_VEL_THR: float = 2.0
     TRACK_ASSOC_W_POS: float = 1.0
-    TRACK_ASSOC_W_VEL: float = 1.2
+    TRACK_ASSOC_W_VEL: float = 0.0
     TRACK_VEL_EMA_ALPHA: float = 0.6
 
     TRACK_MAX_MISSES: int = 20
@@ -138,23 +141,23 @@ class Config:
     KF_DT: float = 1.0
 
     # CV model
-    KF_Q_POS: float = 0.50
-    KF_Q_VEL: float = 0.50
+    KF_Q_POS: float = 0.02
+    KF_Q_VEL: float = 0.02
     KF_R_POS: float = 2.0
 
     # CA model / robust options
-    KF_Q_ACC: float = 0.20
-    KF_INIT_POS_VAR: float = 4.0
-    KF_INIT_VEL_VAR: float = 9.0
+    KF_Q_ACC: float = 0.0
+    KF_INIT_POS_VAR: float = 2.0
+    KF_INIT_VEL_VAR: float = 25.0
     KF_INIT_ACC_VAR: float = 16.0
     KF_USE_ADAPTIVE_R: bool = False
-    KF_ADAPTIVE_R_GAIN: float = 0.25
-    KF_MIN_R_SCALE: float = 0.75
-    KF_MAX_R_SCALE: float = 4.0
+    KF_ADAPTIVE_R_GAIN: float = 0.0
+    KF_MIN_R_SCALE: float = 1.0
+    KF_MAX_R_SCALE: float = 1.0
 
     # Optional output smoother:
     # 在滤波结果上再做一层轻量 EMA，通常能继续压一点抖动
-    TRACK_ENABLE_OUTPUT_EMA: bool = True
+    TRACK_ENABLE_OUTPUT_EMA: bool = False
     TRACK_OUTPUT_EMA_ALPHA: float = 0.85
 
     ENABLE_TEMPORAL_DEBUG: bool = True

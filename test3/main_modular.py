@@ -48,36 +48,82 @@ def build_tracker(cfg):
     if not getattr(cfg, "USE_ONLINE_TRACKER", False):
         return None
 
+    method = getattr(cfg, "TRACKER_METHOD", "cv")
+    assoc_metric = getattr(cfg, "TRACK_ASSOC_METRIC", "euclidean")
+
+    use_vel_assoc = getattr(cfg, "TRACK_USE_VEL_ASSOC", True)
+    assoc_w_pos = getattr(cfg, "TRACK_ASSOC_W_POS", 1.0)
+    assoc_w_vel = getattr(cfg, "TRACK_ASSOC_W_VEL", 0.8)
+
+    q_pos = cfg.KF_Q_POS
+    q_vel = cfg.KF_Q_VEL
+    q_acc = getattr(cfg, "KF_Q_ACC", 0.20)
+
+    use_adaptive_r = getattr(cfg, "KF_USE_ADAPTIVE_R", False)
+    adaptive_r_gain = getattr(cfg, "KF_ADAPTIVE_R_GAIN", 0.25)
+    min_r_scale = getattr(cfg, "KF_MIN_R_SCALE", 0.75)
+    max_r_scale = getattr(cfg, "KF_MAX_R_SCALE", 4.0)
+
+    enable_output_ema = getattr(cfg, "TRACK_ENABLE_OUTPUT_EMA", False)
+    output_ema_alpha = getattr(cfg, "TRACK_OUTPUT_EMA_ALPHA", 0.85)
+
+    # ------------------------------------------------------------
+    # 第一步：强约束 CV 基线
+    # ------------------------------------------------------------
+    if getattr(cfg, "TRACK_STRICT_CONSTANT_VELOCITY", False):
+        method = "cv"
+        assoc_metric = "euclidean"
+
+        use_vel_assoc = False
+        assoc_w_pos = 1.0
+        assoc_w_vel = 0.0
+
+        q_pos = 0.02
+        q_vel = 0.02
+        q_acc = 0.0
+
+        use_adaptive_r = False
+        adaptive_r_gain = 0.0
+        min_r_scale = 1.0
+        max_r_scale = 1.0
+
+        enable_output_ema = False
+        output_ema_alpha = 1.0
+
     return OnlineTrackerManager(
-        method=getattr(cfg, "TRACKER_METHOD", "cv"),
-        assoc_metric=getattr(cfg, "TRACK_ASSOC_METRIC", "euclidean"),
+        method=method,
+        assoc_metric=assoc_metric,
         assoc_dist_thr=cfg.TRACK_ASSOC_DIST_THR,
         assoc_mahal_thr=getattr(cfg, "TRACK_ASSOC_MAHAL_THR", 3.5),
 
         # velocity-aware association
-        use_vel_assoc=getattr(cfg, "TRACK_USE_VEL_ASSOC", True),
+        use_vel_assoc=use_vel_assoc,
         assoc_vel_thr=getattr(cfg, "TRACK_ASSOC_VEL_THR", 2.0),
-        assoc_w_pos=getattr(cfg, "TRACK_ASSOC_W_POS", 1.0),
-        assoc_w_vel=getattr(cfg, "TRACK_ASSOC_W_VEL", 0.8),
+        assoc_w_pos=assoc_w_pos,
+        assoc_w_vel=assoc_w_vel,
         track_vel_ema_alpha=getattr(cfg, "TRACK_VEL_EMA_ALPHA", 0.6),
 
         max_misses=cfg.TRACK_MAX_MISSES,
         min_hits_to_confirm=getattr(cfg, "TRACK_MIN_HITS_TO_CONFIRM", 2),
         max_tentative_misses=getattr(cfg, "TRACK_MAX_TENTATIVE_MISSES", 1),
+
         dt=cfg.KF_DT,
-        q_pos=cfg.KF_Q_POS,
-        q_vel=cfg.KF_Q_VEL,
-        q_acc=getattr(cfg, "KF_Q_ACC", 0.20),
+        q_pos=q_pos,
+        q_vel=q_vel,
+        q_acc=q_acc,
         r_pos=cfg.KF_R_POS,
+
         init_pos_var=getattr(cfg, "KF_INIT_POS_VAR", 4.0),
         init_vel_var=getattr(cfg, "KF_INIT_VEL_VAR", 9.0),
         init_acc_var=getattr(cfg, "KF_INIT_ACC_VAR", 16.0),
-        use_adaptive_r=getattr(cfg, "KF_USE_ADAPTIVE_R", False),
-        adaptive_r_gain=getattr(cfg, "KF_ADAPTIVE_R_GAIN", 0.25),
-        min_r_scale=getattr(cfg, "KF_MIN_R_SCALE", 0.75),
-        max_r_scale=getattr(cfg, "KF_MAX_R_SCALE", 4.0),
-        enable_output_ema=getattr(cfg, "TRACK_ENABLE_OUTPUT_EMA", False),
-        output_ema_alpha=getattr(cfg, "TRACK_OUTPUT_EMA_ALPHA", 0.85),
+
+        use_adaptive_r=use_adaptive_r,
+        adaptive_r_gain=adaptive_r_gain,
+        min_r_scale=min_r_scale,
+        max_r_scale=max_r_scale,
+
+        enable_output_ema=enable_output_ema,
+        output_ema_alpha=output_ema_alpha,
     )
 
 
@@ -218,6 +264,10 @@ def main():
     print("MODEL PRIORS:", cfg.GT_MODEL_PRIORS)
     print("VIEWER MODE:", cfg.VIEWER_MODE)
 
+    print("KF_INIT_POS_VAR:", cfg.KF_INIT_POS_VAR)
+    print("KF_INIT_VEL_VAR:", cfg.KF_INIT_VEL_VAR)
+
+
     center_fn = get_center_function(cfg.CLUSTER_CENTER_MODE)
     bias_fn = get_bias_function(cfg.BIAS_MODE)
     tracker = build_tracker(cfg)
@@ -259,6 +309,8 @@ def main():
             launch_viewer(cache, frame_ids, cfg, fit_mode=args.fit_mode)
 
     print_global_summary(frame_ids, stats, range_bins, range_bias_stats)
+    print("TRACKER METHOD:", cfg.TRACKER_METHOD)
+    print("STRICT CV MODE:", getattr(cfg, "TRACK_STRICT_CONSTANT_VELOCITY", False))
 
     if debug_tool is not None:
         debug_tool.show()
