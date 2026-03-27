@@ -24,6 +24,27 @@ class BaseKalmanTrack(object):
         enable_output_ema=False,
         output_ema_alpha=0.65,
         track_vel_ema_alpha=0.6,
+
+        # ------------------------------------------------------------
+        # Step 2: quality-aware R
+        # 当前先只使用：
+        #   1) num_points   (主导项)
+        #   2) vr_std       (辅助项)
+        # ------------------------------------------------------------
+        use_quality_aware_r=False,
+        quality_r_min_scale=0.75,
+        quality_r_max_scale=4.0,
+
+        quality_singleton_penalty=2.20,
+        quality_two_points_penalty=1.50,
+        quality_three_points_penalty=1.15,
+        quality_many_points_reward=0.90,
+        quality_many_points_thr=4,
+
+        quality_ref_vr_std=0.80,
+        quality_high_vr_std_penalty=1.20,
+        quality_low_vr_std_thr=0.20,
+        quality_low_vr_std_reward=0.95,
     ):
         self.track_id = int(track_id)
         self.dt = float(dt)
@@ -39,13 +60,6 @@ class BaseKalmanTrack(object):
         self.raw_center = np.asarray(center, dtype=float).reshape(2)
         self.filtered_center = self.raw_center.copy()
         self.output_center = self.raw_center.copy()
-        # ------------------------------------------------------------
-        # 初始化辅助状态：
-        # - prev_measurement: 上一次量测位置
-        # - velocity_initialized: 是否已经用两帧差分初始化过速度
-        # ------------------------------------------------------------
-        self.prev_measurement = self.raw_center.copy()
-        self.velocity_initialized = False
 
         self.radial_speed = np.nan
 
@@ -62,6 +76,24 @@ class BaseKalmanTrack(object):
         self._init_pos_var = float(init_pos_var)
         self._init_vel_var = float(init_vel_var)
         self._init_acc_var = float(init_acc_var)
+
+        # ------------------------------------------------------------
+        # quality-aware R config
+        # ------------------------------------------------------------
+        self.use_quality_aware_r = bool(use_quality_aware_r)
+        self.quality_r_min_scale = float(quality_r_min_scale)
+        self.quality_r_max_scale = float(quality_r_max_scale)
+
+        self.quality_singleton_penalty = float(quality_singleton_penalty)
+        self.quality_two_points_penalty = float(quality_two_points_penalty)
+        self.quality_three_points_penalty = float(quality_three_points_penalty)
+        self.quality_many_points_reward = float(quality_many_points_reward)
+        self.quality_many_points_thr = int(quality_many_points_thr)
+
+        self.quality_ref_vr_std = float(quality_ref_vr_std)
+        self.quality_high_vr_std_penalty = float(quality_high_vr_std_penalty)
+        self.quality_low_vr_std_thr = float(quality_low_vr_std_thr)
+        self.quality_low_vr_std_reward = float(quality_low_vr_std_reward)
 
         self.state = None
         self.P = None
@@ -135,12 +167,72 @@ class BaseKalmanTrack(object):
         return float(np.linalg.norm(z - self.position))
 
     def _maybe_adapt_R(self, residual):
+        """
+        原始 residual-aware adaptive R 逻辑保留。
+        注意：如果 use_adaptive_r=False，则这里不改 R。
+        """
         if not self.use_adaptive_r:
             return
+
         residual_norm = float(np.linalg.norm(residual))
         scale = 1.0 + self.adaptive_r_gain * residual_norm
         scale = min(max(scale, self.min_r_scale), self.max_r_scale)
         self.R = np.eye(2, dtype=float) * (self.base_r_pos * scale)
+
+    def _compute_quality_r_scale(self, cluster_meta):
+        """
+        当前只用 num_points + vr_std。
+        其中 num_points 是主导项，vr_std 只是辅助修正。
+        """
+        if (not self.use_quality_aware_r) or (cluster_meta is None):
+            return 1.0
+
+        meta = dict(cluster_meta)
+        scale = 1.0
+
+        # ------------------------------------------------------------
+        # 1) num_points：主导项
+        # ------------------------------------------------------------
+        num_points = meta.get("num_points", np.nan)
+        try:
+            num_points = int(num_points)
+        except Exception:
+            num_points = -1
+
+        if num_points == 1:
+            scale *= self.quality_singleton_penalty
+        elif num_points == 2:
+            scale *= self.quality_two_points_penalty
+        elif num_points == 3:
+            scale *= self.quality_three_points_penalty
+        elif num_points >= self.quality_many_points_thr:
+            scale *= self.quality_many_points_reward
+
+        # ------------------------------------------------------------
+        # 2) vr_std：辅助项
+        # ------------------------------------------------------------
+        vr_std = meta.get("vr_std", np.nan)
+        try:
+            vr_std = float(vr_std)
+        except Exception:
+            vr_std = np.nan
+
+        if np.isfinite(vr_std):
+            if vr_std > self.quality_ref_vr_std:
+                scale *= self.quality_high_vr_std_penalty
+            elif vr_std < self.quality_low_vr_std_thr:
+                scale *= self.quality_low_vr_std_reward
+
+        scale = min(max(scale, self.quality_r_min_scale), self.quality_r_max_scale)
+        return float(scale)
+
+    def _apply_quality_R(self, cluster_meta):
+        """
+        先根据 cluster 质量设置本次量测噪声。
+        """
+        scale = self._compute_quality_r_scale(cluster_meta)
+        self.R = np.eye(2, dtype=float) * (self.base_r_pos * scale)
+        return scale
 
     def update_cluster_velocity(self, cluster_vr):
         if cluster_vr is None:
@@ -161,7 +253,14 @@ class BaseKalmanTrack(object):
     def update(self, measurement, cluster_meta=None):
         z = np.asarray(measurement, dtype=float).reshape(2)
 
+        # ------------------------------------------------------------
+        # 先按 cluster 质量设置 R
+        # ------------------------------------------------------------
+        self._apply_quality_R(cluster_meta)
+
         y = z - self.H.dot(self.state)
+
+        # 原始 adaptive R 逻辑保留；如果你 config 里关掉，它就不会覆盖上面的质量 R
         self._maybe_adapt_R(y)
 
         s = self.H.dot(self.P).dot(self.H.T) + self.R
@@ -219,61 +318,8 @@ class KalmanTrackCV(BaseKalmanTrack):
             [0.0, 1.0, 0.0, 0.0],
         ], dtype=float)
 
-        self.Q = np.diag([
-            self.q_pos,
-            self.q_pos,
-            self.q_vel,
-            self.q_vel,
-        ]).astype(float)
-
+        self.Q = np.diag([self.q_pos, self.q_pos, self.q_vel, self.q_vel]).astype(float)
         self.R = np.eye(2, dtype=float) * float(self.base_r_pos)
-
-    def update(self, measurement, cluster_meta=None):
-        z = np.asarray(measurement, dtype=float).reshape(2)
-
-        # ------------------------------------------------------------
-        # 两帧位置差初始化速度
-        # 仅在第一次成功更新时执行一次
-        # ------------------------------------------------------------
-        if not getattr(self, "velocity_initialized", False):
-            dz = z - self.prev_measurement
-            dt_safe = max(float(self.dt), 1e-6)
-
-            vx0 = float(dz[0] / dt_safe)
-            vy0 = float(dz[1] / dt_safe)
-
-            self.state[2] = vx0
-            self.state[3] = vy0
-            self.velocity_initialized = True
-
-        y = z - self.H.dot(self.state)
-        self._maybe_adapt_R(y)
-
-        s = self.H.dot(self.P).dot(self.H.T) + self.R
-        pht = self.P.dot(self.H.T)
-        try:
-            k = np.linalg.solve(s, pht.T).T
-        except np.linalg.LinAlgError:
-            k = pht.dot(np.linalg.pinv(s))
-
-        self.state = self.state + k.dot(y)
-
-        i = np.eye(self.P.shape[0], dtype=float)
-        kh = k.dot(self.H)
-        self.P = (i - kh).dot(self.P).dot((i - kh).T) + k.dot(self.R).dot(k.T)
-
-        self.filtered_center = self.state[:2].copy()
-        self.output_center = self._apply_output_smoother(self.filtered_center)
-
-        if cluster_meta is not None:
-            self.update_cluster_velocity(cluster_meta.get("vr_median", np.nan))
-
-        self.raw_center = z.copy()
-        self.prev_measurement = z.copy()
-
-        self.on_update_success()
-        return self.output_center.copy()
-
 
 
 class KalmanTrackCA(BaseKalmanTrack):
@@ -353,6 +399,24 @@ class OnlineTrackerManager(object):
         max_r_scale=4.0,
         enable_output_ema=False,
         output_ema_alpha=0.65,
+
+        # ------------------------------------------------------------
+        # Step 2: quality-aware R
+        # ------------------------------------------------------------
+        use_quality_aware_r=False,
+        quality_r_min_scale=0.75,
+        quality_r_max_scale=4.0,
+
+        quality_singleton_penalty=2.20,
+        quality_two_points_penalty=1.50,
+        quality_three_points_penalty=1.15,
+        quality_many_points_reward=0.90,
+        quality_many_points_thr=4,
+
+        quality_ref_vr_std=0.80,
+        quality_high_vr_std_penalty=1.20,
+        quality_low_vr_std_thr=0.20,
+        quality_low_vr_std_reward=0.95,
     ):
         self.method = str(method).lower()
         self.assoc_metric = str(assoc_metric).lower()
@@ -386,6 +450,22 @@ class OnlineTrackerManager(object):
         self.enable_output_ema = bool(enable_output_ema)
         self.output_ema_alpha = float(output_ema_alpha)
 
+        # quality-aware R
+        self.use_quality_aware_r = bool(use_quality_aware_r)
+        self.quality_r_min_scale = float(quality_r_min_scale)
+        self.quality_r_max_scale = float(quality_r_max_scale)
+
+        self.quality_singleton_penalty = float(quality_singleton_penalty)
+        self.quality_two_points_penalty = float(quality_two_points_penalty)
+        self.quality_three_points_penalty = float(quality_three_points_penalty)
+        self.quality_many_points_reward = float(quality_many_points_reward)
+        self.quality_many_points_thr = int(quality_many_points_thr)
+
+        self.quality_ref_vr_std = float(quality_ref_vr_std)
+        self.quality_high_vr_std_penalty = float(quality_high_vr_std_penalty)
+        self.quality_low_vr_std_thr = float(quality_low_vr_std_thr)
+        self.quality_low_vr_std_reward = float(quality_low_vr_std_reward)
+
         self.next_track_id = 1
         self.tracks = {}  # type: Dict[int, BaseKalmanTrack]
 
@@ -403,6 +483,21 @@ class OnlineTrackerManager(object):
             enable_output_ema=self.enable_output_ema,
             output_ema_alpha=self.output_ema_alpha,
             track_vel_ema_alpha=self.track_vel_ema_alpha,
+
+            use_quality_aware_r=self.use_quality_aware_r,
+            quality_r_min_scale=self.quality_r_min_scale,
+            quality_r_max_scale=self.quality_r_max_scale,
+
+            quality_singleton_penalty=self.quality_singleton_penalty,
+            quality_two_points_penalty=self.quality_two_points_penalty,
+            quality_three_points_penalty=self.quality_three_points_penalty,
+            quality_many_points_reward=self.quality_many_points_reward,
+            quality_many_points_thr=self.quality_many_points_thr,
+
+            quality_ref_vr_std=self.quality_ref_vr_std,
+            quality_high_vr_std_penalty=self.quality_high_vr_std_penalty,
+            quality_low_vr_std_thr=self.quality_low_vr_std_thr,
+            quality_low_vr_std_reward=self.quality_low_vr_std_reward,
         )
 
         if self.method == "ca":

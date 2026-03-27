@@ -155,6 +155,46 @@ class Config:
     KF_MIN_R_SCALE: float = 1.0
     KF_MAX_R_SCALE: float = 1.0
 
+    # ------------------------------------------------------------
+    # quality-aware measurement noise R
+    # 当前先只使用：
+    #   1) num_points  (主导项)
+    #   2) vr_std      (辅助项)
+    # ------------------------------------------------------------
+    KF_USE_QUALITY_AWARE_R: bool = True
+
+    # 最终：
+    #   R_eff = KF_R_POS * r_scale
+    KF_QUALITY_R_MIN_SCALE: float = 0.75
+    KF_QUALITY_R_MAX_SCALE: float = 4.00
+
+    # ------------------------------------------------------------
+    # 1) num_points：主导项
+    # ------------------------------------------------------------
+    # 单点目标：明显更不可信
+    KF_QUALITY_SINGLETON_PENALTY: float = 2.20
+
+    # 两点目标：仍然偏弱，但比单点稍好
+    KF_QUALITY_TWO_POINTS_PENALTY: float = 1.50
+
+    # 三点目标：轻微惩罚
+    KF_QUALITY_THREE_POINTS_PENALTY: float = 1.15
+
+    # 多点目标：轻微奖励
+    KF_QUALITY_MANY_POINTS_REWARD: float = 0.90
+    KF_QUALITY_MANY_POINTS_THR: int = 4
+
+    # ------------------------------------------------------------
+    # 2) vr_std：辅助项
+    # ------------------------------------------------------------
+    # vr_std 大说明簇内速度离散更明显，量测可信度下降
+    KF_QUALITY_REF_VR_STD: float = 0.80
+    KF_QUALITY_HIGH_VR_STD_PENALTY: float = 1.20
+
+    # 很稳定时给一点轻微奖励
+    KF_QUALITY_LOW_VR_STD_THR: float = 0.20
+    KF_QUALITY_LOW_VR_STD_REWARD: float = 0.95
+
     # Optional output smoother:
     # 在滤波结果上再做一层轻量 EMA，通常能继续压一点抖动
     TRACK_ENABLE_OUTPUT_EMA: bool = False

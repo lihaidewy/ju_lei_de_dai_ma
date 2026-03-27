@@ -91,41 +91,56 @@ def build_tracker(cfg):
         output_ema_alpha = 1.0
 
     return OnlineTrackerManager(
-        method=method,
-        assoc_metric=assoc_metric,
+        method=getattr(cfg, "TRACKER_METHOD", "cv"),
+        assoc_metric=getattr(cfg, "TRACK_ASSOC_METRIC", "euclidean"),
         assoc_dist_thr=cfg.TRACK_ASSOC_DIST_THR,
         assoc_mahal_thr=getattr(cfg, "TRACK_ASSOC_MAHAL_THR", 3.5),
 
         # velocity-aware association
-        use_vel_assoc=use_vel_assoc,
+        use_vel_assoc=getattr(cfg, "TRACK_USE_VEL_ASSOC", True),
         assoc_vel_thr=getattr(cfg, "TRACK_ASSOC_VEL_THR", 2.0),
-        assoc_w_pos=assoc_w_pos,
-        assoc_w_vel=assoc_w_vel,
+        assoc_w_pos=getattr(cfg, "TRACK_ASSOC_W_POS", 1.0),
+        assoc_w_vel=getattr(cfg, "TRACK_ASSOC_W_VEL", 0.8),
         track_vel_ema_alpha=getattr(cfg, "TRACK_VEL_EMA_ALPHA", 0.6),
 
         max_misses=cfg.TRACK_MAX_MISSES,
         min_hits_to_confirm=getattr(cfg, "TRACK_MIN_HITS_TO_CONFIRM", 2),
         max_tentative_misses=getattr(cfg, "TRACK_MAX_TENTATIVE_MISSES", 1),
-
         dt=cfg.KF_DT,
-        q_pos=q_pos,
-        q_vel=q_vel,
-        q_acc=q_acc,
+        q_pos=cfg.KF_Q_POS,
+        q_vel=cfg.KF_Q_VEL,
+        q_acc=getattr(cfg, "KF_Q_ACC", 0.20),
         r_pos=cfg.KF_R_POS,
-
         init_pos_var=getattr(cfg, "KF_INIT_POS_VAR", 4.0),
         init_vel_var=getattr(cfg, "KF_INIT_VEL_VAR", 9.0),
         init_acc_var=getattr(cfg, "KF_INIT_ACC_VAR", 16.0),
 
-        use_adaptive_r=use_adaptive_r,
-        adaptive_r_gain=adaptive_r_gain,
-        min_r_scale=min_r_scale,
-        max_r_scale=max_r_scale,
+        use_adaptive_r=getattr(cfg, "KF_USE_ADAPTIVE_R", False),
+        adaptive_r_gain=getattr(cfg, "KF_ADAPTIVE_R_GAIN", 0.25),
+        min_r_scale=getattr(cfg, "KF_MIN_R_SCALE", 0.75),
+        max_r_scale=getattr(cfg, "KF_MAX_R_SCALE", 4.0),
 
-        enable_output_ema=enable_output_ema,
-        output_ema_alpha=output_ema_alpha,
+        enable_output_ema=getattr(cfg, "TRACK_ENABLE_OUTPUT_EMA", False),
+        output_ema_alpha=getattr(cfg, "TRACK_OUTPUT_EMA_ALPHA", 0.85),
+
+        # ------------------------------------------------------------
+        # Step 2: quality-aware R
+        # ------------------------------------------------------------
+        use_quality_aware_r=getattr(cfg, "KF_USE_QUALITY_AWARE_R", False),
+        quality_r_min_scale=getattr(cfg, "KF_QUALITY_R_MIN_SCALE", 0.75),
+        quality_r_max_scale=getattr(cfg, "KF_QUALITY_R_MAX_SCALE", 4.0),
+
+        quality_singleton_penalty=getattr(cfg, "KF_QUALITY_SINGLETON_PENALTY", 2.20),
+        quality_two_points_penalty=getattr(cfg, "KF_QUALITY_TWO_POINTS_PENALTY", 1.50),
+        quality_three_points_penalty=getattr(cfg, "KF_QUALITY_THREE_POINTS_PENALTY", 1.15),
+        quality_many_points_reward=getattr(cfg, "KF_QUALITY_MANY_POINTS_REWARD", 0.90),
+        quality_many_points_thr=getattr(cfg, "KF_QUALITY_MANY_POINTS_THR", 4),
+
+        quality_ref_vr_std=getattr(cfg, "KF_QUALITY_REF_VR_STD", 0.80),
+        quality_high_vr_std_penalty=getattr(cfg, "KF_QUALITY_HIGH_VR_STD_PENALTY", 1.20),
+        quality_low_vr_std_thr=getattr(cfg, "KF_QUALITY_LOW_VR_STD_THR", 0.20),
+        quality_low_vr_std_reward=getattr(cfg, "KF_QUALITY_LOW_VR_STD_REWARD", 0.95),
     )
-
 
 def collect_tp_match_rows(fid, cluster_centers, gt_list, metrics):
     rows = []
