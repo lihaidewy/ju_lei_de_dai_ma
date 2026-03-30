@@ -53,6 +53,7 @@ def render_frame(fig, axes, frame_ids, state, frame_cache, params):
         ax_right.scatter(meas_df["X"].values, meas_df["Y"].values, s=12, alpha=0.35, color="gray")
 
     ok_count = 0
+    use_kalman = params.get("USE_KALMAN", True)
 
     for t in targets:
         gx = t["gx"]
@@ -103,16 +104,26 @@ def render_frame(fig, axes, frame_ids, state, frame_cache, params):
         if t["ok"] == 1 and np.isfinite(t["x_hat"]) and np.isfinite(t["y_hat"]):
             ok_count += 1
             ax_right.scatter(t["x_hat"], t["y_hat"], marker="x", s=90, linewidths=2, color="red")
-            ax_right.text(t["x_hat"] + 0.08, t["y_hat"] + 0.08, f"KF-{t['gid']}", fontsize=9, color="red")
+            if use_kalman:
+                ax_right.text(t["x_hat"] + 0.08, t["y_hat"] + 0.08, f"KF-{t['gid']}", fontsize=9, color="red")
+            else:
+                ax_right.text(t["x_hat"] + 0.08, t["y_hat"] + 0.08, f"RAW-{t['gid']}", fontsize=9, color="red")
 
     ax_left.set_title(
         f"Frame {fid} | GT Boxes + ROI + ROI Points\n"
         f"meas={len(meas_df)}, gt={len(gt_frame_df)}"
     )
-    ax_right.set_title(
-        f"Frame {fid} | Tail ROI Points + KF Estimate vs GT Edge Midpoint\n"
-        f"valid_estimates={ok_count}/{len(targets)}"
-    )
+
+    if use_kalman:
+        ax_right.set_title(
+            f"Frame {fid} | Tail ROI Points + KF Estimate vs GT Edge Midpoint\n"
+            f"valid_estimates={ok_count}/{len(targets)}"
+        )
+    else:
+        ax_right.set_title(
+            f"Frame {fid} | Tail ROI Raw Measurement vs GT Edge Midpoint\n"
+            f"valid_estimates={ok_count}/{len(targets)}"
+        )
 
     for ax in (ax_left, ax_right):
         ax.set_xlabel("X")
@@ -128,8 +139,9 @@ def render_frame(fig, axes, frame_ids, state, frame_cache, params):
         ax_right.set_xlim(x0, x1)
         ax_right.set_ylim(y0, y1)
 
+    mode_text = "Kalman CV" if use_kalman else "Raw Measurement"
     fig.suptitle(
-        f"Tail ROI + Kalman CV | Frames {frame_ids[0]}-{frame_ids[-1]} | "
+        f"Tail ROI + {mode_text} | Frames {frame_ids[0]}-{frame_ids[-1]} | "
         f"outer={params['ROI_OUTER']:.1f}m inner={params['ROI_INNER']:.1f}m\n"
         "Keyboard: n=next, p=prev, q/esc=quit",
         fontsize=12,

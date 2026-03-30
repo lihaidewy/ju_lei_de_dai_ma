@@ -1,6 +1,6 @@
 import math
 import numpy as np
-
+"""几何相关的工具函数，主要是坐标变换和边界框计算。"""
 
 def rotation_matrix(yaw_rad: float) -> np.ndarray:
     c = math.cos(yaw_rad)

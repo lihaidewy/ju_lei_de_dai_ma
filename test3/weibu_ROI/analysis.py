@@ -25,7 +25,7 @@ def process_one_target(fid, gt_row, meas_df, tracks, params):
 
     yaw_deg = float(gt_row.YAW) if hasattr(gt_row, "YAW") and gt_row.YAW is not None else 0.0
     yaw_rad = math.radians(yaw_deg)
-    
+
     length = float(gt_dim[model]["L"])
     width = float(gt_dim[model]["W"])
 
@@ -54,18 +54,29 @@ def process_one_target(fid, gt_row, meas_df, tracks, params):
 
     n_roi = int(roi_pts.shape[0])
     z = measurement_from_roi_points(roi_pts) if n_roi >= params["MIN_ROI_POINTS"] else None
-    filtered, used_measurement = update_track(tracks, gid, z, params)
 
-    if filtered is None:
-        x_hat = np.nan
-        y_hat = np.nan
+    use_kalman = params.get("USE_KALMAN", True)
+
+    if use_kalman:
+        output_xy, used_measurement = update_track(tracks, gid, z, params)
+        method = "kalman"
+        track_exists = 1 if gid in tracks else 0
+    else:
+        output_xy = z
+        used_measurement = 1 if z is not None else 0
+        method = "raw"
+        track_exists = 0
+
+    if output_xy is None:
+        x_out = np.nan
+        y_out = np.nan
         y_error = np.nan
         abs_y_error = np.nan
         fit_ok = 0
     else:
-        x_hat = float(filtered[0])
-        y_hat = float(filtered[1])
-        y_error = y_hat - y_gt
+        x_out = float(output_xy[0])
+        y_out = float(output_xy[1])
+        y_error = y_out - y_gt
         abs_y_error = abs(y_error)
         fit_ok = 1
 
@@ -76,11 +87,12 @@ def process_one_target(fid, gt_row, meas_df, tracks, params):
         "side": side_info["name"],
         "n_roi": n_roi,
         "used_measurement": used_measurement,
-        "track_exists": 1 if gid in tracks else 0,
+        "track_exists": track_exists,
+        "method": method,
         "x_gt": x_gt,
         "y_gt": y_gt,
-        "x_hat": x_hat,
-        "y_hat": y_hat,
+        "x_hat": x_out,
+        "y_hat": y_out,
         "y_error": y_error,
         "abs_y_error": abs_y_error,
         "ok": fit_ok,
@@ -101,9 +113,10 @@ def process_one_target(fid, gt_row, meas_df, tracks, params):
         "used_measurement": used_measurement,
         "x_gt": x_gt,
         "y_gt": y_gt,
-        "x_hat": x_hat,
-        "y_hat": y_hat,
+        "x_hat": x_out,
+        "y_hat": y_out,
         "ok": fit_ok,
+        "method": method,
     }
 
     return row, vis
@@ -131,13 +144,13 @@ def run_analysis(radar_data, gt_df, frame_ids, params):
 
             if np.isfinite(row["y_hat"]):
                 print(
-                    f"gid={row['gid']}, side={row['side']}, "
+                    f"gid={row['gid']}, method={row['method']}, side={row['side']}, "
                     f"n_roi={row['n_roi']}, meas_used={row['used_measurement']}, "
                     f"y_gt={row['y_gt']:.3f}, y_hat={row['y_hat']:.3f}, err={row['y_error']:.3f}"
                 )
             else:
                 print(
-                    f"gid={row['gid']}, side={row['side']}, "
+                    f"gid={row['gid']}, method={row['method']}, side={row['side']}, "
                     f"n_roi={row['n_roi']}, meas_used={row['used_measurement']}, "
                     f"y_gt={row['y_gt']:.3f}, y_hat=NaN"
                 )
@@ -151,8 +164,13 @@ def run_analysis(radar_data, gt_df, frame_ids, params):
     return pd.DataFrame(rows), frame_cache
 
 
-def print_summary(df):
-    print("\n===== 尾部 ROI 点 + Kalman CV 滤波结果 =====")
+def print_summary(df, params=None):
+    use_kalman = True if params is None else params.get("USE_KALMAN", True)
+
+    if use_kalman:
+        print("\n===== 尾部 ROI 点 + Kalman CV 滤波结果 =====")
+    else:
+        print("\n===== 尾部 ROI 点原始量测结果（无 Kalman） =====")
 
     if df.empty:
         print("没有结果。")

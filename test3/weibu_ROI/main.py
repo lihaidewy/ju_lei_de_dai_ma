@@ -12,8 +12,8 @@ from visualization import launch_viewer
 def main():
 
     params = {
-        "START_FRAME": 80,
-        "END_FRAME": 129,
+        "START_FRAME": 100,
+        "END_FRAME": 200,
 
         "ROI_OUTER": 1.0,
         "ROI_INNER": 1.0,
@@ -24,19 +24,26 @@ def main():
             2: {"L": 3.55, "W": 2.58},
         },
 
+        # True: 使用 Kalman
+        # False: 不使用 Kalman，直接用 ROI 原始量测
+        "USE_KALMAN": False,
+
         "KF_DT": 1.0,
-        "KF_Q_POS": 0.30,
-        "KF_Q_VEL": 0.50,
+        "KF_Q_POS": 0.01,
+        "KF_Q_VEL": 0.01,
         "KF_R_POS": 1.50,
         "KF_INIT_POS_VAR": 4.0,
         "KF_INIT_VEL_VAR": 9.0,
 
         "MIN_ROI_POINTS": 1,
         "ENABLE_VIEWER": True,
+        "SAVE_RESULT_CSV": False,
+        "RESULT_CSV_PATH": "per_target_results.csv",
     }
 
     cfg = Config()
     radar_data, gt_df = load_all_data(cfg)
+    print(gt_df.columns.tolist())
 
     frame_ids = build_valid_frames(
         radar_data,
@@ -53,7 +60,12 @@ def main():
     print(frame_ids)
 
     result_df, frame_cache = run_analysis(radar_data, gt_df, frame_ids, params)
-    print_summary(result_df)
+    print_summary(result_df, params)
+
+    if params.get("SAVE_RESULT_CSV", False):
+        csv_path = params.get("RESULT_CSV_PATH", "per_target_results.csv")
+        result_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        print(f"\n逐目标结果已保存到: {csv_path}")
 
     if params["ENABLE_VIEWER"]:
         launch_viewer(frame_ids, frame_cache, params)
