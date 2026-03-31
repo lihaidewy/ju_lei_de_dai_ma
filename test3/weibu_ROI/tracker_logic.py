@@ -1,6 +1,8 @@
 import numpy as np
 from online_tracker import KalmanTrackCV
+
 """负责跟踪相关的逻辑，包括根据 GT 生成 ROI，计算 ROI 内的量测，以及维护 Kalman 跟踪器。"""
+
 
 def make_cv_track(track_id, init_center, params):
     return KalmanTrackCV(
