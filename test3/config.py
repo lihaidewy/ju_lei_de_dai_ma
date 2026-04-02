@@ -12,6 +12,7 @@ _GT_DIM = {
 @dataclass
 class Config:
     # RADAR_PATH: str = "data\\radar.csv"
+    # RADAR_PATH: str = "data\\1\\1.csv"
     # GT_PATH: str = "data\\reference3.csv"
     RADAR_PATH: str = "data\S1m_point\S1m.csv"
     GT_PATH: str = "data\S1m_point\\reference.csv"

@@ -17,6 +17,7 @@ class BaseKalmanTrack(object):
         init_pos_var=4.0,
         init_vel_var=9.0,
         init_acc_var=16.0,
+        init_velocity=None,
         use_adaptive_r=False,
         adaptive_r_gain=0.25,
         min_r_scale=0.75,
@@ -24,23 +25,14 @@ class BaseKalmanTrack(object):
         enable_output_ema=False,
         output_ema_alpha=0.65,
         track_vel_ema_alpha=0.6,
-
-        # ------------------------------------------------------------
-        # Step 2: quality-aware R
-        # 当前先只使用：
-        #   1) num_points   (主导项)
-        #   2) vr_std       (辅助项)
-        # ------------------------------------------------------------
         use_quality_aware_r=False,
         quality_r_min_scale=0.75,
         quality_r_max_scale=4.0,
-
         quality_singleton_penalty=2.20,
         quality_two_points_penalty=1.50,
         quality_three_points_penalty=1.15,
         quality_many_points_reward=0.90,
         quality_many_points_thr=4,
-
         quality_ref_vr_std=0.80,
         quality_high_vr_std_penalty=1.20,
         quality_low_vr_std_thr=0.20,
@@ -77,9 +69,11 @@ class BaseKalmanTrack(object):
         self._init_vel_var = float(init_vel_var)
         self._init_acc_var = float(init_acc_var)
 
-        # ------------------------------------------------------------
-        # quality-aware R config
-        # ------------------------------------------------------------
+        if init_velocity is None:
+            self._init_velocity = np.array([0.0, 0.0], dtype=float)
+        else:
+            self._init_velocity = np.asarray(init_velocity, dtype=float).reshape(2).copy()
+
         self.use_quality_aware_r = bool(use_quality_aware_r)
         self.quality_r_min_scale = float(quality_r_min_scale)
         self.quality_r_max_scale = float(quality_r_max_scale)
@@ -102,6 +96,7 @@ class BaseKalmanTrack(object):
         self.Q = None
         self.R = None
         self._build_model(center)
+
 
     def _build_model(self, center):
         raise NotImplementedError
@@ -298,7 +293,9 @@ class KalmanTrackCV(BaseKalmanTrack):
 
     def _build_model(self, center):
         x, y = np.asarray(center, dtype=float).reshape(2)
-        self.state = np.array([x, y, 0.0, 0.0], dtype=float)
+        vx0, vy0 = self._init_velocity.astype(float)
+
+        self.state = np.array([x, y, vx0, vy0], dtype=float)
         self.P = np.diag([
             self._init_pos_var,
             self._init_pos_var,
@@ -331,7 +328,9 @@ class KalmanTrackCA(BaseKalmanTrack):
 
     def _build_model(self, center):
         x, y = np.asarray(center, dtype=float).reshape(2)
-        self.state = np.array([x, y, 0.0, 0.0, 0.0, 0.0], dtype=float)
+        vx0, vy0 = self._init_velocity.astype(float)
+
+        self.state = np.array([x, y, vx0, vy0, 0.0, 0.0], dtype=float)
         self.P = np.diag([
             self._init_pos_var,
             self._init_pos_var,
@@ -476,6 +475,7 @@ class OnlineTrackerManager(object):
             init_pos_var=self.init_pos_var,
             init_vel_var=self.init_vel_var,
             init_acc_var=self.init_acc_var,
+            init_velocity=np.array([0.0, 0.0], dtype=float),
             use_adaptive_r=self.use_adaptive_r or (self.method == "cv_robust"),
             adaptive_r_gain=self.adaptive_r_gain,
             min_r_scale=self.min_r_scale,

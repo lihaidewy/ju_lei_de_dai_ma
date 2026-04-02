@@ -4,6 +4,7 @@ from collections import defaultdict, deque
 import numpy as np
 import pandas as pd
 
+from geometry import world_to_local
 from roi_analysis import resolve_target_side_geometry, get_roi_points
 from tracker_logic import measurement_from_roi_points, update_track
 
@@ -33,11 +34,9 @@ def fit_cv_window(meas_history, target_frame, window_size=5, min_points=2):
     xs = np.array([item[1][0] for item in hist], dtype=float)
     ys = np.array([item[1][1] for item in hist], dtype=float)
 
-    # 点数不足时无法稳定拟合
     if len(np.unique(frames)) < min_points:
         return None
 
-    # 一阶拟合：x = ax * t + bx, y = ay * t + by
     coef_x = np.polyfit(frames, xs, deg=1)
     coef_y = np.polyfit(frames, ys, deg=1)
 
@@ -75,10 +74,9 @@ def process_one_target(fid, gt_row, meas_df, tracks, fit_histories, params):
     side_info = geometry["side_info"]
     outward_sign = geometry["outward_sign"]
 
-    # 当前评估真值仍然是“近端边中点”
     x_gt, y_gt = geometry["midpoint_world"]
 
-    roi_pts, _ = get_roi_points(
+    roi_pts, roi_mask = get_roi_points(
         meas_df=meas_df,
         gx=gx,
         gy=gy,
@@ -94,7 +92,6 @@ def process_one_target(fid, gt_row, meas_df, tracks, fit_histories, params):
 
     estimation_mode = params.get("ESTIMATION_MODE", "kalman").lower()
 
-    # 统一输出变量
     output_xy = None
     used_measurement = 0
     track_exists = 0
@@ -112,7 +109,6 @@ def process_one_target(fid, gt_row, meas_df, tracks, fit_histories, params):
     elif estimation_mode == "cv_fit":
         history = fit_histories[gid]
 
-        # 先把当前帧的原始量测加入历史，再做窗口拟合
         if z is not None:
             history.append((fid, z.copy()))
             used_measurement = 1
@@ -177,6 +173,7 @@ def process_one_target(fid, gt_row, meas_df, tracks, fit_histories, params):
         "side_info": side_info,
         "outward_sign": outward_sign,
         "roi_pts": roi_pts,
+        "roi_mask": np.asarray(roi_mask, dtype=bool),
         "n_roi": n_roi,
         "used_measurement": used_measurement,
         "x_gt": x_gt,
@@ -196,7 +193,6 @@ def run_analysis(radar_data, gt_df, frame_ids, params):
     rows = []
     frame_cache = {}
 
-    # 仅给 cv_fit 用：每个 gid 维护一个历史原始量测窗口
     fit_histories = defaultdict(
         lambda: deque(maxlen=params.get("CVFIT_HISTORY_MAXLEN", 20))
     )
@@ -245,6 +241,227 @@ def run_analysis(radar_data, gt_df, frame_ids, params):
         }
 
     return pd.DataFrame(rows), frame_cache
+
+
+def _safe_normalize(values, near_is_max=True):
+    values = np.asarray(values, dtype=float)
+    if values.size == 0:
+        return np.empty(0, dtype=float)
+
+    vmin = float(np.min(values))
+    vmax = float(np.max(values))
+    span = vmax - vmin
+    if span <= 1e-9:
+        return np.full(values.shape, 0.5, dtype=float)
+
+    if near_is_max:
+        norm = (vmax - values) / span
+    else:
+        norm = (values - vmin) / span
+    return norm.astype(float)
+
+
+def _majority_non_noise_label(labels):
+    labels = np.asarray(labels)
+    labels = labels[labels >= 0]
+    if labels.size == 0:
+        return None
+    uniq, counts = np.unique(labels, return_counts=True)
+    return int(uniq[np.argmax(counts)])
+
+
+def analyze_cluster_roi_core_metrics(
+    frame_ids,
+    frame_cache,
+    num_u_bins=20,
+    candidate_windows=None,
+    success_threshold=0.5,
+):
+    """
+    只保留最核心的 4 个指标：
+    1) u: 点在主 cluster 内的纵向相对位置
+    2) P(ROI | u_bin): 位置到 ROI 概率的映射
+    3) Coverage(W): 给定候选窗口 W 时，对 ROI 的覆盖率
+    4) Target Success Rate(W, tau): 对目标级别的稳定性评估
+
+    返回:
+        point_df: 仅保留点级核心字段 [Frame, gid, model, main_cluster, is_roi, u]
+        prob_df:  按 u bin 统计的概率表
+        window_df: 各候选窗口的整体评估
+    """
+    if candidate_windows is None:
+        candidate_windows = [
+            {"name": "front_20", "intervals": [(0.00, 0.20)]},
+            {"name": "front_30", "intervals": [(0.00, 0.30)]},
+            {"name": "dual_peak", "intervals": [(0.05, 0.25), (0.50, 0.60)]},
+        ]
+
+    point_rows = []
+    target_cover_rows = []
+
+    for fid in frame_ids:
+        cache = frame_cache.get(fid)
+        if cache is None:
+            continue
+
+        meas_df = cache.get("meas_df")
+        labels = cache.get("cluster_labels")
+        targets = cache.get("targets", [])
+
+        if meas_df is None or labels is None or len(meas_df) == 0:
+            continue
+
+        pts_world = meas_df[["X", "Y"]].values.astype(float)
+        labels = np.asarray(labels)
+        if len(labels) != len(pts_world):
+            raise ValueError(f"Frame {fid}: cluster_labels 与 meas_df 长度不一致")
+
+        for t in targets:
+            roi_mask = np.asarray(
+                t.get("roi_mask", np.zeros(len(pts_world), dtype=bool)),
+                dtype=bool,
+            )
+            if roi_mask.shape[0] != len(pts_world):
+                raise ValueError(f"Frame {fid}, gid={t['gid']}: roi_mask 长度与点数不一致")
+
+            roi_labels = labels[roi_mask]
+            main_cluster = _majority_non_noise_label(roi_labels)
+            if main_cluster is None:
+                continue
+
+            cluster_mask = labels == main_cluster
+            cluster_pts_world = pts_world[cluster_mask]
+            cluster_roi_mask = roi_mask[cluster_mask]
+            if cluster_pts_world.shape[0] == 0:
+                continue
+
+            cluster_local = world_to_local(
+                cluster_pts_world,
+                t["gx"],
+                t["gy"],
+                t["yaw_rad"],
+            )
+            local_y = cluster_local[:, 1]
+            near_axis = float(t["outward_sign"]) * local_y
+            u = _safe_normalize(near_axis, near_is_max=True)
+
+            for idx in range(len(u)):
+                point_rows.append({
+                    "Frame": int(fid),
+                    "gid": int(t["gid"]),
+                    "model": int(t["model"]),
+                    "main_cluster": int(main_cluster),
+                    "is_roi": int(cluster_roi_mask[idx]),
+                    "u": float(u[idx]),
+                })
+
+            roi_u = u[cluster_roi_mask]
+            n_roi = int(roi_u.size)
+            if n_roi == 0:
+                continue
+
+            for window in candidate_windows:
+                cover = _coverage_for_u(roi_u, window["intervals"])
+                target_cover_rows.append({
+                    "Frame": int(fid),
+                    "gid": int(t["gid"]),
+                    "model": int(t["model"]),
+                    "window_name": str(window["name"]),
+                    "coverage": float(cover),
+                    "success": int(cover >= float(success_threshold)),
+                })
+
+    point_df = pd.DataFrame(point_rows)
+    target_cover_df = pd.DataFrame(target_cover_rows)
+
+    if point_df.empty:
+        prob_df = pd.DataFrame(columns=[
+            "u_bin", "u_left", "u_right", "n_points", "n_roi_points", "p_roi_given_u"
+        ])
+        window_df = pd.DataFrame(columns=[
+            "window_name", "intervals", "mean_coverage", "median_coverage",
+            "target_success_rate", "n_targets"
+        ])
+        return point_df, prob_df, window_df
+
+    edges = np.linspace(0.0, 1.0, int(num_u_bins) + 1)
+    point_df = point_df.copy()
+    point_df["u_bin"] = np.digitize(point_df["u"].values, edges[1:-1], right=False).astype(int)
+
+    prob_rows = []
+    for bin_idx in range(len(edges) - 1):
+        mask = point_df["u_bin"].values == bin_idx
+        n_points = int(np.sum(mask))
+        n_roi_points = int(point_df.loc[mask, "is_roi"].sum()) if n_points > 0 else 0
+        p_roi = (n_roi_points / n_points) if n_points > 0 else np.nan
+        prob_rows.append({
+            "u_bin": int(bin_idx),
+            "u_left": float(edges[bin_idx]),
+            "u_right": float(edges[bin_idx + 1]),
+            "n_points": n_points,
+            "n_roi_points": n_roi_points,
+            "p_roi_given_u": p_roi,
+        })
+    prob_df = pd.DataFrame(prob_rows)
+
+    window_rows = []
+    if not target_cover_df.empty:
+        interval_map = {str(w["name"]): str(w["intervals"]) for w in candidate_windows}
+        for window_name, group in target_cover_df.groupby("window_name"):
+            window_rows.append({
+                "window_name": str(window_name),
+                "intervals": interval_map.get(str(window_name), ""),
+                "mean_coverage": float(group["coverage"].mean()),
+                "median_coverage": float(group["coverage"].median()),
+                "target_success_rate": float(group["success"].mean()),
+                "n_targets": int(len(group)),
+            })
+    window_df = pd.DataFrame(window_rows)
+
+    return point_df, prob_df, window_df
+
+
+def _coverage_for_u(roi_u, intervals):
+    roi_u = np.asarray(roi_u, dtype=float)
+    if roi_u.size == 0:
+        return np.nan
+
+    keep_mask = np.zeros(roi_u.shape, dtype=bool)
+    for left, right in intervals:
+        keep_mask |= (roi_u >= float(left)) & (roi_u <= float(right))
+    return float(np.mean(keep_mask))
+
+
+def print_cluster_roi_core_metrics_summary(prob_df, window_df, success_threshold=0.5):
+    print("\n===== Cluster 内 ROI 核心指标 =====")
+    print("1) u: 点在主 cluster 内的纵向相对位置，0=近端，1=远端")
+    print("2) P(ROI|u_bin): 点落在某个 u 区间时属于 ROI 的概率")
+    print("3) Coverage(W): 候选窗口 W 对真实 ROI 的覆盖率")
+    print(
+        f"4) Target Success Rate(W, tau={success_threshold:.2f}): "
+        "Coverage(W) 达到阈值 tau 的目标占比"
+    )
+
+    if not prob_df.empty:
+        print("\n===== P(ROI | u_bin) =====")
+        for row in prob_df.itertuples(index=False):
+            if row.n_points <= 0:
+                continue
+            print(
+                f"u in [{row.u_left:.2f}, {row.u_right:.2f}): "
+                f"n={row.n_points}, roi={row.n_roi_points}, P={row.p_roi_given_u:.4f}"
+            )
+
+    if not window_df.empty:
+        print("\n===== Candidate Window Evaluation =====")
+        for row in window_df.itertuples(index=False):
+            print(
+                f"{row.window_name}: intervals={row.intervals}, "
+                f"mean_coverage={row.mean_coverage:.4f}, "
+                f"median_coverage={row.median_coverage:.4f}, "
+                f"target_success_rate={row.target_success_rate:.4f}, "
+                f"n_targets={row.n_targets}"
+            )
 
 
 def print_summary(df, params=None):

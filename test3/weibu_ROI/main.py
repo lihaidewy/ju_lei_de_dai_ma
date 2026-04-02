@@ -5,7 +5,13 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from config import Config
 from data_pipeline import load_all_data, cluster_one_frame
 
-from analysis import build_valid_frames, run_analysis, print_summary
+from analysis import (
+    analyze_cluster_roi_core_metrics,
+    build_valid_frames,
+    print_cluster_roi_core_metrics_summary,
+    print_summary,
+    run_analysis,
+)
 from visualization import launch_viewer
 
 
@@ -73,6 +79,19 @@ def main():
         "SAVE_RESULT_CSV": False,
         "RESULT_CSV_PATH": "edge_midpoint_results.csv",
 
+        # 核心指标输出
+        "SAVE_CLUSTER_ROI_CORE_CSV": True,
+        "CLUSTER_ROI_POINT_CSV_PATH": "cluster_roi_core_points.csv",
+        "CLUSTER_ROI_PROB_CSV_PATH": "cluster_roi_probability_by_u.csv",
+        "CLUSTER_ROI_WINDOW_CSV_PATH": "cluster_roi_window_eval.csv",
+        "U_NUM_BINS": 20,
+        "WINDOW_SUCCESS_THRESHOLD": 0.50,
+        "CANDIDATE_WINDOWS": [
+            {"name": "front_20", "intervals": [(0.00, 0.20)]},
+            {"name": "front_30", "intervals": [(0.00, 0.30)]},
+            {"name": "dual_peak", "intervals": [(0.05, 0.25), (0.50, 0.60)]},
+        ],
+
         "VIEW_XMIN": -20,
         "VIEW_XMAX": 20,
         "VIEW_YMIN": 0,
@@ -99,11 +118,9 @@ def main():
     print("有效帧:")
     print(frame_ids)
 
-    # 保留原有分析逻辑
     result_df, frame_cache = run_analysis(radar_data, gt_df, frame_ids, params)
     print_summary(result_df, params)
 
-    # 新增：把聚类 labels 附加到 frame_cache 中，供升级后的 viewer 使用
     frame_cache = attach_cluster_labels_to_frame_cache(
         radar_data=radar_data,
         frame_ids=frame_ids,
@@ -111,10 +128,36 @@ def main():
         cfg=cfg,
     )
 
+    point_df, prob_df, window_df = analyze_cluster_roi_core_metrics(
+        frame_ids=frame_ids,
+        frame_cache=frame_cache,
+        num_u_bins=params.get("U_NUM_BINS", 20),
+        candidate_windows=params.get("CANDIDATE_WINDOWS"),
+        success_threshold=params.get("WINDOW_SUCCESS_THRESHOLD", 0.50),
+    )
+    print_cluster_roi_core_metrics_summary(
+        prob_df=prob_df,
+        window_df=window_df,
+        success_threshold=params.get("WINDOW_SUCCESS_THRESHOLD", 0.50),
+    )
+
     if params.get("SAVE_RESULT_CSV", False):
         csv_path = params.get("RESULT_CSV_PATH", "edge_midpoint_results.csv")
         result_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
         print(f"\n逐目标结果已保存到: {csv_path}")
+
+    if params.get("SAVE_CLUSTER_ROI_CORE_CSV", True):
+        point_path = params.get("CLUSTER_ROI_POINT_CSV_PATH", "cluster_roi_core_points.csv")
+        prob_path = params.get("CLUSTER_ROI_PROB_CSV_PATH", "cluster_roi_probability_by_u.csv")
+        window_path = params.get("CLUSTER_ROI_WINDOW_CSV_PATH", "cluster_roi_window_eval.csv")
+
+        point_df.to_csv(point_path, index=False, encoding="utf-8-sig")
+        prob_df.to_csv(prob_path, index=False, encoding="utf-8-sig")
+        window_df.to_csv(window_path, index=False, encoding="utf-8-sig")
+
+        print(f"\n核心点级数据已保存到: {point_path}")
+        print(f"u 概率表已保存到: {prob_path}")
+        print(f"候选窗口评估表已保存到: {window_path}")
 
     if params["ENABLE_VIEWER"]:
         launch_viewer(frame_ids, frame_cache, params)
