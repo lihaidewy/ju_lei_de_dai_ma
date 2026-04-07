@@ -260,7 +260,7 @@ def main():
         "KF_INIT_VX": 0.0,
 
         # 连续 miss 的最大保留帧数
-        "KF_MAX_MISSES": 10,
+        "KF_MAX_MISSES": 5,
 
         # cv_fit 参数
         "CVFIT_WINDOW_SIZE": 5,

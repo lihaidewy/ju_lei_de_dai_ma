@@ -484,11 +484,12 @@ def weighted_median_xy(points_xy, weights):
 
 def apply_prob_weights_and_measure_global_y(cluster_pts_world, prob_df, params):
     pts = np.asarray(cluster_pts_world, dtype=float)
+
     if pts.shape[0] == 0:
         return {
             "z": None,
-            "u": np.empty(0, dtype=float),
-            "weights": np.empty(0, dtype=float),
+            "u": np.empty(0),
+            "weights": np.empty(0),
             "points": pts,
             "selected_mask": np.zeros(0, dtype=bool),
             "weight_sum": 0.0,
@@ -498,47 +499,88 @@ def apply_prob_weights_and_measure_global_y(cluster_pts_world, prob_df, params):
             "near_end_is_ymax": False,
         }
 
+    # =========================
+    # Step 1: 计算 u
+    # =========================
     sensor_y = float(params.get("SENSOR_Y", 0.0))
-    yaxis_info = compute_u_from_global_y(cluster_pts_world=pts, sensor_y=sensor_y)
+    yaxis_info = compute_u_from_global_y(
+        cluster_pts_world=pts,
+        sensor_y=sensor_y,
+    )
     u = yaxis_info["u"]
-    weights = lookup_probability_from_u(u, prob_df)
 
-    weight_threshold = float(params.get("WEIGHT_KEEP_THRESHOLD", 0.0))
-    selected_mask = weights >= weight_threshold
-    selected_pts = pts[selected_mask]
-    selected_w = weights[selected_mask]
+    # =========================
+    # Step 2: 强筛选（核心逻辑）
+    # =========================
+    # 可调参数
+    u_low_main_min = params.get("U_MAIN_MIN", 0.05)
+    u_low_main_max = params.get("U_MAIN_MAX", 0.30)
 
-    if selected_pts.shape[0] == 0:
-        selected_mask = np.ones(len(pts), dtype=bool)
-        selected_pts = pts
-        selected_w = weights
+    u_mid_min = params.get("U_MID_MIN", 0.45)
+    u_mid_max = params.get("U_MID_MAX", 0.55)
 
-    measurement_mode = str(params.get("WEIGHTED_MEASUREMENT_MODE", "weighted_mean")).lower()
-    if measurement_mode == "weighted_mean":
-        z = weighted_mean_xy(
-            selected_pts,
-            selected_w,
-            min_weight_sum=float(params.get("WEIGHT_MIN_SUM", 1e-6)),
-        )
-    elif measurement_mode == "weighted_median":
-        z = weighted_median_xy(selected_pts, selected_w)
+    use_mid_region = params.get("USE_MID_REGION", True)
+
+    mask_main = (u >= u_low_main_min) & (u <= u_low_main_max)
+
+    if use_mid_region:
+        mask_mid = (u >= u_mid_min) & (u <= u_mid_max)
+        selected_mask = mask_main | mask_mid
     else:
-        raise ValueError(
-            f"未知 WEIGHTED_MEASUREMENT_MODE={measurement_mode}，仅支持: weighted_mean / weighted_median"
+        selected_mask = mask_main
+
+    # =========================
+    # Step 3: 最小点数约束（关键）
+    # =========================
+    min_points = int(params.get("MIN_VALID_POINTS", 3))
+
+    if np.sum(selected_mask) < min_points:
+        # 强制无测量 → 触发 CV fallback
+        return {
+            "z": None,
+            "u": u,
+            "weights": np.zeros_like(u),
+            "points": pts,
+            "selected_mask": selected_mask,
+            "weight_sum": 0.0,
+            "n_selected": int(np.sum(selected_mask)),
+            "near_y_value": float(yaxis_info["near_y_value"]),
+            "far_y_value": float(yaxis_info["far_y_value"]),
+            "near_end_is_ymax": bool(yaxis_info["near_end_is_ymax"]),
+        }
+
+    # =========================
+    # Step 4: 用筛选后的点做估计
+    # =========================
+    selected_pts = pts[selected_mask]
+
+    # 推荐用 median（更稳）
+    measurement_mode = str(params.get("WEIGHTED_MEASUREMENT_MODE", "weighted_median")).lower()
+
+    if measurement_mode == "weighted_mean":
+        z = np.mean(selected_pts, axis=0)
+
+    elif measurement_mode == "weighted_median":
+        z = weighted_median_xy(
+            selected_pts,
+            np.ones(len(selected_pts))
         )
+    else:
+        raise ValueError("未知测量模式")
 
     return {
         "z": z,
         "u": u,
-        "weights": weights,
+        "weights": selected_mask.astype(float),
         "points": pts,
         "selected_mask": selected_mask,
-        "weight_sum": float(np.sum(selected_w)),
+        "weight_sum": float(np.sum(selected_mask)),
         "n_selected": int(np.sum(selected_mask)),
         "near_y_value": float(yaxis_info["near_y_value"]),
         "far_y_value": float(yaxis_info["far_y_value"]),
         "near_end_is_ymax": bool(yaxis_info["near_end_is_ymax"]),
     }
+
 
 
 # =========================

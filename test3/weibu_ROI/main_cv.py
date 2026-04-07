@@ -16,6 +16,7 @@ from analysis_cv import (
     run_global_y_prob_weighted_analysis,
 )
 from visualization_cv import launch_viewer
+from u_bin_visualization import save_u_bin_figures
 
 
 def build_cluster_label_map(radar_data, frame_ids, cfg):
@@ -149,13 +150,40 @@ def main():
         # =========================
         "ENABLE_CENTER_COMPENSATION": True,
         "CENTER_COMP_MODE": "constant",
-        "CENTER_COMP_DISTANCE": 1.56 + 0.45,
+        "CENTER_COMP_DISTANCE": 1.6+1.08 ,
         "CENTER_COMP_ALPHA": 1.0,
         "CENTER_COMP_BY_MODEL": {
             0: 1.75,
             1: 1.45,
             2: 1.25,
         },
+
+        # ===== 强筛选参数 =====
+        "U_MAIN_MIN": 0.05, # 主区域
+        "U_MAIN_MAX": 0.30,
+
+        "U_MID_MIN": 0.45,  # 中间区域（次优 辅助
+        "U_MID_MAX": 0.55,
+
+        "USE_MID_REGION": True, # 是否使用中间区域
+
+        # ===== 最小点数 =====
+        "MIN_VALID_POINTS": 2,
+
+        # ===== Kalman参数（重点调Y）=====
+        "KF_INIT_P_X": 1.0,
+        "KF_INIT_P_Y": 4.0,
+        "KF_INIT_P_VY": 4.0,
+
+        "KF_Q_X": 0.01,
+        "KF_Q_Y": 0.10,
+        "KF_Q_VY": 0.20,
+
+        "KF_R_X": 0.3 ** 2,
+        "KF_R_Y": 0.8 ** 2,
+
+        "KF_MISS_VY_DECAY": 0.98,
+        "KF_MAX_ABS_VY": 5.0,
 
         # =========================
         # 可视化参数
@@ -220,6 +248,14 @@ def main():
         raw_prob_df,
         min_weight=params.get("MIN_LOOKUP_WEIGHT", 0.0),
     )
+    save_u_bin_figures(
+        prob_df=raw_prob_df,      
+        point_df=point_df,
+        summary_path="u_bin_summary.png",
+        combined_path="u_bin_combined.png",
+        show=False,
+    )
+    print("u 分 bin 可视化已保存：u_bin_summary.png, u_bin_combined.png")
 
     print_probability_summary(raw_prob_df)
 
