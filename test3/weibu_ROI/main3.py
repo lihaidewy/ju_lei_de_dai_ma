@@ -276,6 +276,10 @@ def main():
         "SAVE_RESULT_CSV": True,
         "RESULT_CSV_PATH": "global_y_prob_weighted_cluster_results.csv",
 
+        # 新增：保存被选中的量测点
+        "SAVE_SELECTED_MEAS_CSV": True,
+        "SELECTED_MEAS_CSV_PATH": "S1s_points_selected_measurement_points.csv",
+
         # 最近邻数据关联参数
         "ASSOC_REFERENCE": "gt_center",
         "ASSOC_CLUSTER_CENTER_MODE": "median",
@@ -369,7 +373,7 @@ def main():
         point_df.to_csv(point_path, index=False, encoding="utf-8-sig")
         print(f"点级分布已保存到: {point_path}")
 
-    result_df, frame_cache = run_global_y_prob_weighted_analysis(
+    result_df, frame_cache, selected_meas_df = run_global_y_prob_weighted_analysis(
         radar_data=radar_data,
         gt_df=gt_df,
         frame_ids=eval_frame_ids,
@@ -386,6 +390,11 @@ def main():
         csv_path = params.get("RESULT_CSV_PATH", "global_y_prob_weighted_cluster_results.csv")
         result_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
         print(f"\n逐目标结果已保存到: {csv_path}")
+
+    if params.get("SAVE_SELECTED_MEAS_CSV", False):
+        meas_csv_path = params.get("SELECTED_MEAS_CSV_PATH", "selected_measurement_points.csv")
+        selected_meas_df.to_csv(meas_csv_path, index=False, encoding="utf-8-sig")
+        print(f"\n被选中的量测点已保存到: {meas_csv_path}")
 
     if params.get("ENABLE_VIEWER", False):
         launch_viewer(eval_frame_ids, frame_cache, params)

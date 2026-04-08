@@ -14,10 +14,10 @@ class Config:
     # RADAR_PATH: str = "data\\radar.csv"
     # RADAR_PATH: str = "data\\1\\1.csv"
     # GT_PATH: str = "data\\reference3.csv"
-    RADAR_PATH: str = "data\S1m_point\S1m.csv"
-    GT_PATH: str = "data\S1m_point\\reference.csv"
-    # RADAR_PATH: str = "data\S1s_point\S1s.csv"
-    # GT_PATH: str = "data\S1s_point\\references.csv"
+    # RADAR_PATH: str = "data\S1m_point\S1m.csv"
+    # GT_PATH: str = "data\S1m_point\\reference.csv"
+    RADAR_PATH: str = "data\S1s_point\S1s.csv"
+    GT_PATH: str = "data\S1s_point\\references.csv"
 
     EPS_X: float = 1.5
     EPS_Y: float = 4.0

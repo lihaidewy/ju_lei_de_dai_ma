@@ -564,6 +564,103 @@ def apply_prob_weights_and_measure_global_y(cluster_pts_world, prob_df, params):
     }
 
 
+def _pick_first_existing_column(df, candidates):
+    for col in candidates:
+        if col in df.columns:
+            return col
+    return None
+
+
+def extract_selected_measurement_points(
+    fid,
+    gid,
+    model,
+    main_cluster,
+    meas_df,
+    cluster_labels,
+    weighted_info,
+):
+    """
+    导出“真正参与量测生成”的点：
+      - 在主 cluster 内
+      - selected_mask == True
+
+    如果该 cluster 没有点过阈值，则沿用原逻辑：
+      selected_mask 会退化为全 True，
+      即导出该 cluster 全部点。
+    """
+    if main_cluster is None:
+        return pd.DataFrame()
+
+    labels = np.asarray(cluster_labels)
+    cluster_mask = labels == int(main_cluster)
+    if np.sum(cluster_mask) == 0:
+        return pd.DataFrame()
+
+    cluster_df = meas_df.loc[cluster_mask].copy().reset_index(drop=True)
+
+    selected_mask = np.asarray(weighted_info["selected_mask"], dtype=bool)
+    weights = np.asarray(weighted_info["weights"], dtype=float)
+    u = np.asarray(weighted_info["u"], dtype=float)
+
+    if len(cluster_df) != len(selected_mask):
+        raise ValueError(
+            f"Frame {fid}, gid {gid}: cluster_df 长度与 selected_mask 长度不一致"
+        )
+
+    cluster_df["selected_for_measurement"] = selected_mask.astype(int)
+    cluster_df["weight"] = weights
+    cluster_df["u"] = u
+    cluster_df["Frame"] = int(fid)
+    cluster_df["gid"] = int(gid)
+    cluster_df["model"] = int(model)
+    cluster_df["main_cluster"] = int(main_cluster)
+
+    speed_col = _pick_first_existing_column(
+        cluster_df,
+        ["speed", "Speed", "VEL", "Vel", "Velocity", "velocity", "v", "V"]
+    )
+    range_col = _pick_first_existing_column(
+        cluster_df,
+        ["range", "Range", "R", "range_m", "RangeM"]
+    )
+    angle_col = _pick_first_existing_column(
+        cluster_df,
+        ["angle", "Angle", "AZI", "Azi", "azimuth", "Azimuth"]
+    )
+    snr_col = _pick_first_existing_column(
+        cluster_df,
+        ["SNR", "snr"]
+    )
+
+    cluster_df["speed"] = cluster_df[speed_col] if speed_col is not None else np.nan
+    cluster_df["range"] = cluster_df[range_col] if range_col is not None else np.nan
+    cluster_df["angle"] = cluster_df[angle_col] if angle_col is not None else np.nan
+    cluster_df["SNR"] = cluster_df[snr_col] if snr_col is not None else np.nan
+
+    selected_df = cluster_df[cluster_df["selected_for_measurement"] == 1].copy()
+
+    preferred_cols = [
+        "Frame",
+        "gid",
+        "model",
+        "main_cluster",
+        "speed",
+        "range",
+        "angle",
+        "SNR",
+        "weight",
+        "u",
+        "X",
+        "Y",
+        "selected_for_measurement",
+    ]
+    other_cols = [c for c in selected_df.columns if c not in preferred_cols]
+    selected_df = selected_df[preferred_cols + other_cols]
+
+    return selected_df
+
+
 # =========================
 # 中心几何补偿
 # =========================
@@ -862,6 +959,7 @@ def run_global_y_prob_weighted_analysis(radar_data, gt_df, frame_ids, cluster_la
     rows = []
     frame_cache = {}
     fit_histories = defaultdict(lambda: deque(maxlen=params.get("CVFIT_HISTORY_MAXLEN", 20)))
+    selected_meas_rows = []
 
     center_mode = str(params.get("ASSOC_CLUSTER_CENTER_MODE", "median")).lower()
 
@@ -892,6 +990,7 @@ def run_global_y_prob_weighted_analysis(radar_data, gt_df, frame_ids, cluster_la
 
         for gt_row in gt_frame_df.itertuples(index=False):
             gid = int(gt_row.ID)
+            model = int(gt_row.model)
             main_cluster = association_map.get(gid, None)
 
             row, vis = process_one_target_global_y_prob_weighted(
@@ -910,6 +1009,26 @@ def run_global_y_prob_weighted_analysis(radar_data, gt_df, frame_ids, cluster_la
 
             rows.append(row)
             vis_targets.append(vis)
+
+            # 导出“真正参与量测计算”的点
+            if main_cluster is not None:
+                weighted_info = {
+                    "selected_mask": vis["selected_mask"],
+                    "weights": vis["cluster_weights"],
+                    "u": vis["cluster_u"],
+                }
+
+                selected_df = extract_selected_measurement_points(
+                    fid=fid,
+                    gid=gid,
+                    model=model,
+                    main_cluster=main_cluster,
+                    meas_df=meas_df,
+                    cluster_labels=cluster_labels,
+                    weighted_info=weighted_info,
+                )
+                if not selected_df.empty:
+                    selected_meas_rows.append(selected_df)
 
             if np.isfinite(row["xy_error"]):
                 print(
@@ -935,7 +1054,17 @@ def run_global_y_prob_weighted_analysis(radar_data, gt_df, frame_ids, cluster_la
             "cluster_labels": cluster_labels,
         }
 
-    return pd.DataFrame(rows), frame_cache
+    selected_meas_df = (
+        pd.concat(selected_meas_rows, ignore_index=True)
+        if len(selected_meas_rows) > 0
+        else pd.DataFrame(columns=[
+            "Frame", "gid", "model", "main_cluster",
+            "speed", "range", "angle", "SNR",
+            "weight", "u", "X", "Y", "selected_for_measurement"
+        ])
+    )
+
+    return pd.DataFrame(rows), frame_cache, selected_meas_df
 
 
 # =========================
@@ -1001,6 +1130,7 @@ def print_summary(df, params=None):
             f"mean_abs_y_error = {row['abs_y_error']:.4f} m, "
             f"mean_xy_error = {row['xy_error']:.4f} m"
         )
+
 
 def _print_metric_block(title, stat_df):
     print(f"\n===== {title} =====")

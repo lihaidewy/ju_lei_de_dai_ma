@@ -19,8 +19,8 @@ def infer_init_velocity_from_center(center_xy, params):
     x_sign_eps = float(params.get("KF_INIT_X_SIGN_EPS", 1.0))
     vx0 = float(params.get("KF_INIT_VX", 0.0))
 
-    vy_pos = float(params.get("KF_INIT_VY_POS", +8.0))
-    vy_neg = float(params.get("KF_INIT_VY_NEG", -8.0))
+    vy_pos = float(params.get("KF_INIT_VY_POS", +1.1))
+    vy_neg = float(params.get("KF_INIT_VY_NEG", -1.1))
     vy_center = float(params.get("KF_INIT_VY_CENTER", 0.0))
 
     if x0 > x_sign_eps:
